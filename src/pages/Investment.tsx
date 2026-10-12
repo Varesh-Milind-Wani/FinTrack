@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { ChartNoAxesCombined, Check, Landmark, Pencil, Plus, TrendingDown, TrendingUp, Trash2, Wallet, X } from "lucide-react";
+import { Fragment, useMemo, useState } from "react";
+import { ChartNoAxesCombined, Check, ChevronDown, ChevronUp, Landmark, Pencil, Plus, TrendingDown, TrendingUp, Trash2, Wallet, X } from "lucide-react";
 import type { Investment, InvestmentType, UserAccount } from "../types/finance";
 import { formatCurrency } from "../utils/money";
 
@@ -15,6 +15,7 @@ const InvestmentPage = ({ user, onSave }: Props) => {
   const [editing, setEditing] = useState<Investment | null>(null);
   const [form, setForm] = useState(emptyForm());
   const [filterType, setFilterType] = useState<InvestmentType | "all">("all");
+  const [expandedInvestmentId, setExpandedInvestmentId] = useState<string | null>(null);
   const stats = useMemo(() => {
     const totalInvested = investments.reduce((total, item) => total + item.amount, 0);
     const totalCurrent = investments.reduce((total, item) => total + item.currentValue, 0);
@@ -42,8 +43,51 @@ const InvestmentPage = ({ user, onSave }: Props) => {
     </div>
     <section className="investment-filter-panel"><div><span className="eyebrow">HOLDINGS</span><p>Filter by asset class</p></div><div className="investment-filter-chips">{(["all", ...Object.keys(TYPE_LABELS)] as (InvestmentType | "all")[]).map((type) => <button key={type} onClick={() => setFilterType(type)} className={filterType === type ? "investment-filter active" : "investment-filter"}>{type === "all" ? "All types" : TYPE_LABELS[type]}</button>)}</div></section>
     <section className="investment-holdings-card"><div className="investment-holdings-header"><div><h3>Portfolio holdings</h3><p>{filtered.length} of {investments.length} holdings shown</p></div><span className="investment-holdings-value">{fmt(stats.totalCurrent)}</span></div><div className="investment-table-scroll"><table className="investment-table"><thead><tr><th>Name</th><th>Type</th><th>Date</th><th>Invested</th><th>Current value</th><th>P&amp;L</th><th>Return</th><th>Note</th><th className="investment-actions-heading">Actions</th></tr></thead><tbody>{filtered.length === 0 ? <tr><td colSpan={9} className="investment-empty"><Wallet size={32} /><p>No investments yet. Click <strong>Add investment</strong> to get started.</p></td></tr> : filtered.map((item) => {
-      const pnl = item.currentValue - item.amount; const pct = item.amount ? pnl / item.amount * 100 : 0; const positive = pnl >= 0;
-      return <tr key={item.id}><td className="investment-name">{item.name}</td><td><span className="investment-type-badge" style={{ color: TYPE_COLORS[item.type], borderColor: `${TYPE_COLORS[item.type]}55`, backgroundColor: `${TYPE_COLORS[item.type]}16` }}>{TYPE_LABELS[item.type]}</span></td><td className="investment-date">{new Date(item.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td><td className="investment-money">{fmt(item.amount)}</td><td className="investment-money">{fmt(item.currentValue)}</td><td className={positive ? "investment-positive" : "investment-negative"}>{positive ? "+" : ""}{fmt(pnl)}</td><td className={positive ? "investment-positive" : "investment-negative"}>{positive ? "+" : ""}{pct.toFixed(2)}%</td><td className="investment-note">{item.note || "—"}</td><td><div className="investment-actions"><button className="action-button" onClick={() => openEdit(item)} title="Edit investment"><Pencil size={14} /></button><button className="action-button delete" onClick={() => remove(item.id)} title="Delete investment"><Trash2 size={14} /></button></div></td></tr>;
+      const pnl = item.currentValue - item.amount;
+      const pct = item.amount ? pnl / item.amount * 100 : 0;
+      const positive = pnl >= 0;
+      const isExpanded = expandedInvestmentId === item.id;
+      const date = new Date(item.date);
+
+      return <Fragment key={item.id}>
+        <tr>
+          <td className="investment-name">{item.name}</td>
+          <td><span className="investment-type-badge" style={{ color: TYPE_COLORS[item.type], borderColor: `${TYPE_COLORS[item.type]}55`, backgroundColor: `${TYPE_COLORS[item.type]}16` }}>{TYPE_LABELS[item.type]}</span></td>
+          <td className="investment-date">{date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
+          <td className="investment-money">{fmt(item.amount)}</td>
+          <td className="investment-money">{fmt(item.currentValue)}</td>
+          <td className={positive ? "investment-positive" : "investment-negative"}>{positive ? "+" : ""}{fmt(pnl)}</td>
+          <td className={positive ? "investment-positive" : "investment-negative"}>{positive ? "+" : ""}{pct.toFixed(2)}%</td>
+          <td className="investment-note">{item.note || "—"}</td>
+          <td><div className="investment-actions">
+            <button type="button" className="action-button" onClick={() => openEdit(item)} title="Edit investment" aria-label={`Edit ${item.name}`}><Pencil size={14} /></button>
+            <button type="button" className="action-button delete" onClick={() => remove(item.id)} title="Delete investment" aria-label={`Delete ${item.name}`}><Trash2 size={14} /></button>
+            <button type="button" className="action-button expand" onClick={() => setExpandedInvestmentId(isExpanded ? null : item.id)} title={isExpanded ? "Hide investment details" : "Show investment details"} aria-label={isExpanded ? "Hide investment details" : `Show details for ${item.name}`} aria-expanded={isExpanded}>{isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}</button>
+          </div></td>
+        </tr>
+        <tr className={`investment-detail-row ${isExpanded ? "is-expanded" : ""}`}>
+          <td colSpan={9}>
+            <div className="investment-detail-disclosure" aria-hidden={!isExpanded}>
+              <div className="investment-detail-disclosure-inner">
+                <section className="investment-details" aria-label={`${item.name} investment details`}>
+                  <div className="investment-details-heading">
+                    <div><span>PORTFOLIO HOLDING</span><strong>{item.name}</strong></div>
+                    <span>{date.toLocaleDateString("en-IN", { dateStyle: "full" })}</span>
+                  </div>
+                  <dl className="investment-details-grid">
+                    <div><dt>Asset class</dt><dd>{TYPE_LABELS[item.type]}</dd></div>
+                    <div><dt>Amount invested</dt><dd>{fmt(item.amount)}</dd></div>
+                    <div><dt>Current value</dt><dd>{fmt(item.currentValue)}</dd></div>
+                    <div><dt>Profit / Loss</dt><dd className={positive ? "investment-positive" : "investment-negative"}>{positive ? "+" : "−"}{fmt(Math.abs(pnl))}</dd></div>
+                    <div><dt>Return</dt><dd className={positive ? "investment-positive" : "investment-negative"}>{positive ? "+" : ""}{pct.toFixed(2)}%</dd></div>
+                    <div className="investment-details-note"><dt>Note</dt><dd>{item.note || "No note added"}</dd></div>
+                  </dl>
+                </section>
+              </div>
+            </div>
+          </td>
+        </tr>
+      </Fragment>;
     })}</tbody></table></div></section>
     {showModal && <InvestmentModal editing={editing} form={form} setForm={setForm} onClose={() => setShowModal(false)} onSave={save} />}
   </div>;

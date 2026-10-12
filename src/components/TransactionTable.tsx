@@ -1,14 +1,17 @@
 import {
   ArrowDownRight,
   ArrowUpRight,
+  ChevronDown,
+  ChevronUp,
   Pencil,
   Search,
   Trash2,
   ListFilter,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import type { Transaction } from "../types/finance";
 import { calculateCurrentBalance } from "../utils/balance";
+import { formatCurrency } from "../utils/money";
 
 interface Props {
   transactions: Transaction[];
@@ -24,6 +27,7 @@ const TransactionTable = ({
   user,
 }: Props) => {
   const [search, setSearch] = useState("");
+  const [expandedTransactionId, setExpandedTransactionId] = useState<string | null>(null);
   const [sortOrder, setSortOrder] =
     useState<"newest" | "oldest">("newest");
   const [typeFilter, setTypeFilter] = useState<"all" | "profit" | "loss">("all");
@@ -140,9 +144,11 @@ const TransactionTable = ({
               const date = new Date(transaction.date);
               const isProfit = transaction.type === "profit";
               const tradesCount = isProfit ? transaction.profitTradeCount : transaction.lossTradeCount;
+              const isExpanded = expandedTransactionId === transaction.id;
 
               return (
-                <tr key={transaction.id}>
+                <Fragment key={transaction.id}>
+                <tr>
                   <td>
                     <div className="table-date-cell">
                       <span className="date-main">
@@ -220,9 +226,50 @@ const TransactionTable = ({
                       >
                         <Trash2 size={15} />
                       </button>
+
+                      <button
+                        className="table-btn-icon expand"
+                        type="button"
+                        onClick={() => setExpandedTransactionId(isExpanded ? null : transaction.id)}
+                        title={isExpanded ? "Hide transaction details" : "Show transaction details"}
+                        aria-label={isExpanded ? "Hide transaction details" : "Show transaction details"}
+                        aria-expanded={isExpanded}
+                      >
+                        {isExpanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+                      </button>
                     </div>
                   </td>
                 </tr>
+                <tr className={`transaction-detail-row ${isExpanded ? "is-expanded" : ""}`}>
+                  <td colSpan={10}>
+                    <div className="transaction-detail-disclosure" aria-hidden={!isExpanded}>
+                      <div className="transaction-detail-disclosure-inner">
+                        <section className={`transaction-details ${isProfit ? "profit" : "loss"}`} aria-label="Transaction details">
+                          <div className="transaction-details-heading">
+                            <div className="transaction-details-title">
+                              <span>TRADE BREAKDOWN</span>
+                              <strong>Transaction details</strong>
+                            </div>
+                            <span>{date.toLocaleString("en-IN", { dateStyle: "full", timeStyle: "short" })}</span>
+                          </div>
+                          <dl className="transaction-details-grid">
+                            <div><dt>Type</dt><dd>{isProfit ? "Profit" : "Loss"}</dd></div>
+                            <div><dt>Category</dt><dd>{transaction.category}</dd></div>
+                            <div><dt>Price</dt><dd>{formatCurrency(transaction.price ?? 0, user.currency)}</dd></div>
+                            <div><dt>Gross amount</dt><dd>{formatCurrency(transaction.grossAmount ?? transaction.price ?? 0, user.currency)}</dd></div>
+                            <div><dt>Cost</dt><dd>{formatCurrency(transaction.costAmount ?? 0, user.currency)}</dd></div>
+                            <div><dt>Net amount</dt><dd>{isProfit ? "+" : "−"}{formatCurrency(transaction.amount, user.currency)}</dd></div>
+                            <div><dt>Balance after transaction</dt><dd>{formatCurrency(transaction.balance, user.currency)}</dd></div>
+                            {tradesCount !== undefined && <div><dt>Trade count</dt><dd>{tradesCount}</dd></div>}
+                            {transaction.confidenceLevel !== undefined && <div><dt>Confidence</dt><dd>{transaction.confidenceLevel}%</dd></div>}
+                            <div className="transaction-details-note"><dt>Note</dt><dd>{transaction.note || "—"}</dd></div>
+                          </dl>
+                        </section>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+                </Fragment>
               );
             })}
 

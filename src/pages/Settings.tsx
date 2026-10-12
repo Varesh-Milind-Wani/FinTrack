@@ -25,8 +25,11 @@ const getCostForDate = (
   schedules: DefaultCostSchedule[],
   fallback = 0
 ) => {
+  const transactionDate = new Date(date);
+  const dateKey = `${transactionDate.getFullYear()}-${String(transactionDate.getMonth() + 1).padStart(2, "0")}-${String(transactionDate.getDate()).padStart(2, "0")}`;
+
   return [...schedules]
-    .filter((schedule) => schedule.startDate <= date.slice(0, 10))
+    .filter((schedule) => schedule.startDate <= dateKey)
     .sort((left, right) => right.startDate.localeCompare(left.startDate))[0]
     ?.amount ?? fallback;
 };
@@ -47,11 +50,25 @@ const recalculateTransactions = (
   return {
     ...transaction,
     amount,
-    price: amount,
+    price: grossAmount,
     grossAmount,
     costAmount,
   };
 });
+
+const withRecalculatedCosts = (
+  user: UserAccount,
+  schedules: DefaultCostSchedule[],
+) => {
+  const transactions = recalculateTransactions(
+    user.transactions,
+    schedules,
+    user.defaultCostAmount ?? 0,
+    user.lockedMonths,
+  );
+  const updatedUser = { ...user, defaultCostSchedules: schedules, transactions };
+  return { ...updatedUser, currentBalance: calculateCurrentBalance(updatedUser) };
+};
 
 interface Props {
   user: UserAccount;
@@ -207,11 +224,7 @@ const Settings = ({ user, onSave }: Props) => {
     ).sort((left, right) => right.startDate.localeCompare(left.startDate));
 
     setSchedules(nextSchedules);
-    onSave({
-      ...user,
-      defaultCostSchedules: nextSchedules,
-      transactions: recalculateTransactions(user.transactions, nextSchedules, user.defaultCostAmount ?? 0, user.lockedMonths),
-    });
+    onSave(withRecalculatedCosts(user, nextSchedules));
     setScheduleName("");
     setScheduleDate("");
     setScheduleAmount("");
@@ -242,11 +255,7 @@ const Settings = ({ user, onSave }: Props) => {
   const handleDeleteSchedule = (id: string) => {
     const nextSchedules = schedules.filter((schedule) => schedule.id !== id);
     setSchedules(nextSchedules);
-    onSave({
-      ...user,
-      defaultCostSchedules: nextSchedules,
-      transactions: recalculateTransactions(user.transactions, nextSchedules, user.defaultCostAmount ?? 0, user.lockedMonths),
-    });
+    onSave(withRecalculatedCosts(user, nextSchedules));
   };
 
   return (

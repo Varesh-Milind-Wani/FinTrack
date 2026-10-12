@@ -401,8 +401,8 @@ const Dashboard = ({ user, onAdd }: Props) => {
         },
         chart: {
           backgroundColor: "transparent",
-          height: 420,
-          spacing: [32, 32, 34, 32],
+          height: 430,
+          spacing: [14, 20, 22, 20],
           zoomType: undefined,
           panning: { enabled: false },
           zooming: {
@@ -620,8 +620,8 @@ const Dashboard = ({ user, onAdd }: Props) => {
       accessibility: { enabled: true },
       chart: {
         backgroundColor: "transparent",
-        height: 420,
-        spacing: [32, 32, 36, 32],
+        height: 430,
+        spacing: [14, 20, 24, 20],
         style: { fontFamily: "Inter, system-ui, sans-serif" },
         // Disable built-in zoom/pan — handled by attachChartInteraction
         zoomType: undefined,
@@ -899,10 +899,10 @@ const Dashboard = ({ user, onAdd }: Props) => {
     chart: {
       type: "areaspline",
       backgroundColor: "transparent",
-      height: 320,
+      height: 300,
       style: { fontFamily: "Inter, system-ui, sans-serif" },
       animation: { duration: 1800, easing: "easeOutQuart" } as Highcharts.AnimationOptionsObject,
-      spacing: [20, 20, 20, 20],
+      spacing: [8, 12, 14, 12],
       borderRadius: 0,
       zoomType: undefined,
       panning: { enabled: false },
@@ -1097,8 +1097,8 @@ const Dashboard = ({ user, onAdd }: Props) => {
     grid: {
       left: 65,
       right: 20,
-      top: 20,
-      bottom: 48,
+      top: 10,
+      bottom: 38,
       borderColor: "rgba(59, 130, 246, 0.12)",
     },
     legend: {
@@ -1537,6 +1537,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
 
       <div className="charts-two-column">
         <ChartPanel
+          className="dashboard-overview-chart"
           title="Wealth Chart"
           subtitle="Your wealth over time, built from profits and losses"
           action={<span className="live-badge">LIVE</span>}
@@ -1555,6 +1556,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
         </ChartPanel>
 
         <ChartPanel
+          className="dashboard-overview-chart"
           title="Profit & Loss Trend"
           subtitle="How profit and loss move over time"
           onClick={() =>
@@ -1568,7 +1570,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
         >
           <EChartsChart
             option={profitLossTrendOption}
-            style={{ height: 320, width: "100%" }}
+            style={{ height: 300, width: "100%" }}
             notMerge
             lazyUpdate
           />

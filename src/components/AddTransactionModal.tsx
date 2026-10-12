@@ -38,13 +38,10 @@ const getScheduledCost = (
   schedules: DefaultCostSchedule[],
   fallback: number
 ) => {
-  const selectedDate = new Date(dateTime).getTime();
+  const selectedDate = dateTime.slice(0, 10);
 
   return [...schedules]
-    .filter(
-      (schedule) =>
-        new Date(`${schedule.startDate}T00:00:00`).getTime() <= selectedDate
-    )
+    .filter((schedule) => schedule.startDate <= selectedDate)
     .sort((left, right) => right.startDate.localeCompare(left.startDate))[0]
     ?.amount ?? fallback;
 };
@@ -124,9 +121,9 @@ const AddTransactionModal = ({
       ? getScheduledCost(dateTime, defaultCostSchedules, defaultCostAmount)
       : 0;
 
-    const netAmount = currentType === "profit" 
-      ? Math.max(0, activeAmount - appliedCost)  // Profit after costs (can't be negative)
-      : activeAmount;  // Loss is just the loss amount (costs don't increase losses)
+    const netAmount = currentType === "profit"
+      ? Math.max(0, activeAmount - appliedCost)
+      : activeAmount + appliedCost;
 
     const transaction: Transaction = {
       id: initialTransaction?.id ?? crypto.randomUUID(),

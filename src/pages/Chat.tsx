@@ -183,8 +183,8 @@ Supported formats: profit/loss/gain/made/won/lost + amount`;
     const now = new Date();
     const costAmount = costIncluded ? user.defaultCostAmount : 0;
     const netAmount = pendingTransaction.type === "profit"
-      ? Math.max(0, pendingTransaction.amount - costAmount)  // Profit after costs
-      : pendingTransaction.amount;  // Loss is just the loss amount
+      ? Math.max(0, pendingTransaction.amount - costAmount)
+      : pendingTransaction.amount + costAmount;
 
     const newTransaction: Transaction = {
       id: crypto.randomUUID(),

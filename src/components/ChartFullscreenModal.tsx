@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChartCandlestick, LineChart, X } from "lucide-react";
 import Highcharts from "highcharts";
 import HighchartsStock from "highcharts/highstock";
@@ -41,12 +41,24 @@ const ChartFullscreenModal = ({
   echartsOption,
   onClose,
 }: Props) => {
-  const chartHeight = Math.max(
-    420,
-    Math.round(window.innerHeight - 150)
-  );
+  const chartBodyRef = useRef<HTMLDivElement>(null);
+  const [chartHeight, setChartHeight] = useState(420);
   const [chartMode, setChartMode] =
     useState<ChartMode>(defaultChartMode);
+
+  useEffect(() => {
+    if (!open || !chartBodyRef.current) return;
+
+    const body = chartBodyRef.current;
+    const updateChartHeight = () => {
+      setChartHeight(Math.max(280, Math.floor(body.getBoundingClientRect().height)));
+    };
+    const observer = new ResizeObserver(updateChartHeight);
+    observer.observe(body);
+    updateChartHeight();
+
+    return () => observer.disconnect();
+  }, [open]);
 
   useEffect(() => {
     if (open) {
@@ -170,6 +182,7 @@ const ChartFullscreenModal = ({
       chart: {
         ...selectedOptions.chart,
         height: chartHeight,
+        spacing: [12, 24, 20, 12],
         zoomType: undefined,
         panning: { enabled: false },
         zooming: { mouseWheel: { enabled: false } },
@@ -180,6 +193,22 @@ const ChartFullscreenModal = ({
             attachInteraction(this);
             if (chartMode === "classic") {
               attachClassicValueLabel(this);
+            } else {
+              const candleSeries = this.series.find((series) => series.type === "candlestick");
+              candleSeries?.points.forEach((point, index) => {
+                const candleGraphic = point.graphic?.element;
+                if (!candleGraphic) return;
+
+                candleGraphic.animate(
+                  [{ opacity: 0 }, { opacity: 1 }],
+                  {
+                    duration: 180,
+                    delay: index * 28,
+                    easing: "ease-out",
+                    fill: "both",
+                  }
+                );
+              });
             }
           }
         },
@@ -200,8 +229,20 @@ const ChartFullscreenModal = ({
       return echartsOption;
     }
 
+    const grid = (echartsOption.grid as Record<string, unknown> | undefined) ?? {};
+    const legend = (echartsOption.legend as Record<string, unknown> | undefined) ?? {};
+
     return {
       ...echartsOption,
+      grid: {
+        ...grid,
+        bottom: 88,
+      },
+      legend: {
+        ...legend,
+        top: undefined,
+        bottom: 8,
+      },
       dataZoom: [
         {
           type: "inside",
@@ -304,7 +345,7 @@ const ChartFullscreenModal = ({
           </div>
         </div>
 
-        <div className="chart-fullscreen-body">
+        <div className="chart-fullscreen-body" ref={chartBodyRef}>
           {chartMode === "classic" && fullscreenHighchartsOptions ? (
             <HighchartsChart
               highcharts={Highcharts}

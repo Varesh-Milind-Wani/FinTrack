@@ -204,51 +204,15 @@ const App = () => {
       />
 
       <main className="main-area">
-        <header className="top-header">
-          <button
-            className="mobile-menu-button"
-            onClick={() =>
-              setMobileMenuOpen(
-                !mobileMenuOpen
-              )
-            }
-          >
-            {mobileMenuOpen ? (
-              <X size={20} />
-            ) : (
-              <Menu size={20} />
-            )}
-          </button>
-
-          <div>
-            <span className="breadcrumb">
-              FinTrack /{" "}
-              {activePage === "dashboard" ? "Dashboard"
-                : activePage === "transactions" ? "Transactions"
-                : activePage === "analytics" ? "Analytics"
-                : activePage === "profitloss" ? "P&L"
-                : activePage === "reports" ? "Reports"
-                : activePage === "withdrawals" ? "Withdrawals"
-                : activePage === "chat" ? "Chat Assistant"
-                : activePage === "investment" ? "Investment"
-                : activePage === "expenses" ? "Expenses"
-                : "Settings"}
-            </span>
-
-            <h2>
-              {activePage === "dashboard" ? "Financial overview"
-                : activePage === "transactions" ? "Transaction records"
-                : activePage === "analytics" ? "Analytics"
-                : activePage === "profitloss" ? "Profit & Loss Analysis"
-                : activePage === "reports" ? "Monthly Reports"
-                : activePage === "withdrawals" ? "Withdrawals"
-                : activePage === "chat" ? "Chat Assistant"
-                : activePage === "investment" ? "Investment Portfolio"
-                : activePage === "expenses" ? "Expense Tracker"
-                : "Settings"}
-            </h2>
-          </div>
-        </header>
+        <button
+          type="button"
+          className="mobile-menu-button"
+          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+          aria-label={mobileMenuOpen ? "Close navigation" : "Open navigation"}
+          aria-expanded={mobileMenuOpen}
+        >
+          {mobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
+        </button>
 
         {activePage === "dashboard" ? (
           <Dashboard

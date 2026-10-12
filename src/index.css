@@ -2219,7 +2219,7 @@ select:focus-visible {
 .investment-holdings-header p { margin: 5px 0 0; color: var(--text-3); font-size: 12px; }
 .investment-holdings-value { color: var(--green); font-size: 16px; font-weight: 800; }
 .investment-table-scroll { overflow-x: auto; }
-.investment-table { width: 100%; min-width: 920px; border-collapse: collapse; }
+.investment-table { width: 100%; min-width: 960px; border-collapse: collapse; }
 .investment-table th { padding: 13px 17px; color: var(--text-3); background: rgba(6, 8, 16, .45); font-size: 10px; font-weight: 800; letter-spacing: .08em; text-align: left; text-transform: uppercase; }
 .investment-table td { padding: 16px 17px; border-top: 1px solid rgba(30, 39, 56, .8); font-size: 13px; }
 .investment-table tbody tr { transition: background .18s ease; }
@@ -2249,10 +2249,10 @@ select:focus-visible {
 .pl-period-control, .pl-calendar-controls { display: flex; align-items: center; gap: 9px; }
 .pl-page .period-selector { min-height: 40px; border: 1px solid var(--border-2); border-radius: 10px; padding: 0 34px 0 13px; background: var(--surface-2); color: var(--text); font: inherit; font-size: 13px; font-weight: 700; }
 .pl-summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-.pl-summary-card { position: relative; overflow: hidden; min-height: 134px; padding: 19px; border: 1px solid var(--border); border-radius: 15px; background: linear-gradient(145deg, var(--surface-2), var(--surface)); }
+.pl-summary-card { position: relative; overflow: hidden; min-height: 150px; padding: 20px; border: 1px solid var(--border); border-radius: 15px; background: linear-gradient(145deg, var(--surface-2), var(--surface)); }
 .pl-summary-card::before { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 3px; }
 .pl-summary-card.profit-card::before { background: var(--green); }.pl-summary-card.loss-card::before { background: var(--red); }.pl-summary-card.cost-card::before { background: var(--amber); }
-.pl-summary-card .stat-card-top { margin-bottom: 16px; }.pl-summary-card .stat-value { font-size: 26px; }.pl-summary-card .stat-icon { width: 36px; height: 36px; }.pl-summary-card .stat-icon.profit { color: var(--green); background: var(--green-dim); }.pl-summary-card .stat-icon.loss { color: var(--red); background: var(--red-dim); }.pl-summary-card .stat-icon.cost { color: var(--amber); background: var(--amber-dim); }
+.pl-summary-card .stat-card-top { margin-bottom: 16px; }.pl-summary-card .stat-card-top > span { font-size: 12px; }.pl-summary-card .stat-value { font-size: 32px; }.pl-summary-card .stat-trend { font-size: 13px; }.pl-summary-card .stat-icon { width: 36px; height: 36px; }.pl-summary-card .stat-icon.profit { color: var(--green); background: var(--green-dim); }.pl-summary-card .stat-icon.loss { color: var(--red); background: var(--red-dim); }.pl-summary-card .stat-icon.cost { color: var(--amber); background: var(--amber-dim); }
 .pl-summary-card .stat-value.cost { color: var(--amber); }.pl-summary-card .stat-trend.neutral { color: var(--text-3); }
 .pl-calendar-section { margin-top: 20px; padding: 20px; border: 1px solid var(--border); border-radius: 16px; background: linear-gradient(145deg, rgba(17, 22, 32, .9), rgba(12, 16, 24, .95)); }
 .pl-calendar-toolbar { margin-bottom: 18px; }.pl-calendar-toolbar h2 { margin: 7px 0 5px; font-size: 19px; letter-spacing: -.4px; }
