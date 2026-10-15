@@ -402,7 +402,9 @@ const Dashboard = ({ user, onAdd }: Props) => {
         chart: {
           backgroundColor: "transparent",
           height: 430,
-          spacing: [14, 20, 22, 20],
+          // Keep enough room for the right-side crosshair price flag so it
+          // does not cover the last candle.
+          spacing: [14, 64, 22, 20],
           zoomType: undefined,
           panning: { enabled: false },
           zooming: {
@@ -621,7 +623,9 @@ const Dashboard = ({ user, onAdd }: Props) => {
       chart: {
         backgroundColor: "transparent",
         height: 430,
-        spacing: [14, 20, 24, 20],
+        // Reserve a right gutter for the y-axis crosshair label. Without it,
+        // the label can sit on top of the final candle near the chart edge.
+        spacing: [14, 64, 24, 20],
         style: { fontFamily: "Inter, system-ui, sans-serif" },
         // Disable built-in zoom/pan — handled by attachChartInteraction
         zoomType: undefined,
