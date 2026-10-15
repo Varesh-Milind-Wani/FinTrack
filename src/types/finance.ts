@@ -8,6 +8,10 @@ export interface Investment {
   type: InvestmentType;
   amount: number;          // Amount invested
   currentValue: number;    // Current market value
+  /** Per-unit purchase price, when applicable. */
+  entryPrice?: number;
+  /** Per-unit sale price, when the holding has been exited. */
+  exitPrice?: number;
   date: string;            // Date of investment
   note: string;
 }

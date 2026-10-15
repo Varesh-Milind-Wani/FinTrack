@@ -218,7 +218,7 @@ export const exportFinanceToExcel = (user: UserAccount) => {
     XLSX.utils.json_to_sheet(transactionData);
   const investmentSheet = XLSX.utils.json_to_sheet((user.investments ?? []).map((item) => ({
     "Investment ID": item.id, "Recorded At (ISO)": item.date, Name: item.name, Type: item.type,
-    "Amount Invested": item.amount, "Current Value": item.currentValue, Note: item.note,
+    "Amount Invested": item.amount, "Current Value": item.currentValue, "Entry Price": item.entryPrice ?? "", "Exit Price": item.exitPrice ?? "", Note: item.note,
   })));
   const expenseSheet = XLSX.utils.json_to_sheet((user.expenses ?? []).map((item) => ({
     "Expense ID": item.id, "Recorded At (ISO)": item.date, Name: item.name, Category: item.category, Amount: item.amount, Note: item.note,

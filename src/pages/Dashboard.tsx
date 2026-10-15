@@ -827,7 +827,18 @@ const Dashboard = ({ user, onAdd }: Props) => {
         },
       ],
     };
-  }, [formatMoney, user.createdAt, user.startingBalance, user.transactions, refreshKey]);
+  }, [
+    formatMoney,
+    user.createdAt,
+    user.startingBalance,
+    user.transactions,
+    user.investmentIncluded,
+    user.investments,
+    currentBalance,
+    totalProfit,
+    totalLoss,
+    refreshKey,
+  ]);
 
   const categoryData = useMemo(() => {
     const categories: Record<string, number> = {};

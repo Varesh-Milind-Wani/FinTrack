@@ -2236,7 +2236,13 @@ select:focus-visible {
 .investment-empty svg { display: block; margin: 0 auto 12px; opacity: .45; }
 .investment-note-field { display: block; margin-top: 15px; }
 .investment-note-field input { width: 100%; margin-top: 7px; }
-.investment-modal { max-width: 560px; }
+.investment-modal { width: min(620px, 100%); max-width: 620px; }
+.investment-modal .form-grid { row-gap: 16px; }
+.investment-modal .form-grid label { display: flex; min-width: 0; flex-direction: column; gap: 7px; color: var(--text-2); font-size: 12px; font-weight: 650; }
+.investment-modal .form-grid input, .investment-modal .form-grid select, .investment-modal .investment-note-field input { width: 100%; min-width: 0; }
+.investment-modal .investment-field-hint { margin-left: 4px; color: var(--text-3); font-size: 10px; font-weight: 500; }
+.investment-modal .modal-body { max-height: min(68vh, 560px); overflow-y: auto; }
+.investment-modal .modal-footer { position: sticky; bottom: 0; }
 @media (max-width: 1050px) { .investment-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .investment-filter-panel { align-items: flex-start; flex-direction: column; } .investment-filter-chips { justify-content: flex-start; } }
 @media (max-width: 650px) { .investment-summary-grid { grid-template-columns: 1fr; } .investment-heading .investment-add-button { width: 100%; justify-content: center; } .investment-holdings-header { align-items: flex-start; gap: 10px; flex-direction: column; } }
 
