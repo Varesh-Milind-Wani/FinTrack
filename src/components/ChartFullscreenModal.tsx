@@ -134,7 +134,9 @@ const ChartFullscreenModal = ({
         chart.xAxis[0].setExtremes(undefined, undefined, false);
         chart.yAxis[0].setExtremes(undefined, undefined, true);
       }, { signal: listeners.signal });
-      const chartBody = chart.renderTo.parentElement;
+      // `container` is the generated chart element; its parent is the
+      // render target whose height controls the fullscreen chart.
+      const chartBody = chart.container.parentElement;
       if (chartBody && typeof ResizeObserver !== "undefined") {
         const fitChartToBody = () => {
           const height = chartBody.clientHeight;
