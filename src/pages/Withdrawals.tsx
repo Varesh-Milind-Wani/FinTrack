@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import type { UserAccount, Withdrawal } from "../types/finance";
 import { formatCurrency } from "../utils/money";
+import { getInvestmentProceeds } from "../utils/balance";
 
 interface Props {
   user: UserAccount;
@@ -30,9 +31,28 @@ const Withdrawals = ({ user, onSave }: Props) => {
   const [status, setStatus] = useState<string | null>(null);
 
   const withdrawals = useMemo(() => user.withdrawals ?? [], [user.withdrawals]);
+  const displayedWithdrawals = useMemo(() => {
+    const linkedInvestmentIds = new Set(
+      withdrawals.filter((entry) => entry.method === "investment" && entry.sourceInvestmentId).map((entry) => entry.sourceInvestmentId),
+    );
+    const legacyInvestmentSales: Withdrawal[] = (user.investments ?? [])
+      .filter((investment) => investment.isClosed && !linkedInvestmentIds.has(investment.id))
+      .map((investment) => ({
+        id: `investment-sale-${investment.id}`,
+        date: investment.date,
+        amount: investment.exitPrice != null
+          ? investment.exitPrice * (investment.quantity ?? 1)
+          : investment.currentValue,
+        method: "investment",
+        sourceInvestmentId: investment.id,
+        note: `Investment sale · ${investment.name}`,
+        status: "completed",
+      }));
+    return [...withdrawals, ...legacyInvestmentSales];
+  }, [withdrawals, user.investments]);
 
   const filteredWithdrawals = useMemo(() => {
-    return withdrawals
+    return displayedWithdrawals
       .filter((w) => {
         if (filter !== "all" && w.status !== filter) return false;
         const searchLower = search.toLowerCase();
@@ -43,22 +63,27 @@ const Withdrawals = ({ user, onSave }: Props) => {
         );
       })
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [withdrawals, search, filter]);
+  }, [displayedWithdrawals, search, filter]);
 
   const totalWithdrawn = useMemo(
-    () => withdrawals.filter((w) => w.status === "completed").reduce((sum, w) => sum + w.amount, 0),
+    () => withdrawals.filter((w) => w.status === "completed" && w.method !== "investment").reduce((sum, w) => sum + w.amount, 0),
     [withdrawals]
   );
 
   const pendingWithdrawals = useMemo(
-    () => withdrawals.filter((w) => w.status === "pending").reduce((sum, w) => sum + w.amount, 0),
+    () => withdrawals.filter((w) => w.status === "pending" && w.method !== "investment").reduce((sum, w) => sum + w.amount, 0),
     [withdrawals]
   );
 
+  const investmentProceeds = useMemo(
+    () => getInvestmentProceeds(user),
+    [user.investments, user.withdrawals]
+  );
+
   const availableBalance = useMemo(() => {
-    const currentBalance = user.currentBalance ?? (user.startingBalance + withdrawals.length);
-    return Math.max(0, currentBalance - pendingWithdrawals);
-  }, [user.currentBalance, user.startingBalance, withdrawals, pendingWithdrawals]);
+    const currentBalance = user.currentBalance ?? user.startingBalance;
+    return Math.max(0, currentBalance + investmentProceeds - pendingWithdrawals);
+  }, [user.currentBalance, user.startingBalance, investmentProceeds, pendingWithdrawals]);
 
   const handleAddWithdrawal = (e: React.FormEvent) => {
     e.preventDefault();
@@ -87,7 +112,7 @@ const Withdrawals = ({ user, onSave }: Props) => {
     const updatedUser: UserAccount = {
       ...user,
       withdrawals: [newWithdrawal, ...withdrawals],
-      currentBalance: user.currentBalance ? user.currentBalance - withdrawalAmount : undefined,
+      currentBalance: user.currentBalance != null ? user.currentBalance - withdrawalAmount : undefined,
     };
 
     onSave(updatedUser);
@@ -109,7 +134,7 @@ const Withdrawals = ({ user, onSave }: Props) => {
     const updatedUser: UserAccount = {
       ...user,
       withdrawals: withdrawals.filter((w) => w.id !== id),
-      currentBalance: user.currentBalance ? user.currentBalance + withdrawal.amount : undefined,
+      currentBalance: user.currentBalance != null ? user.currentBalance + withdrawal.amount : undefined,
     };
 
     onSave(updatedUser);
@@ -123,6 +148,8 @@ const Withdrawals = ({ user, onSave }: Props) => {
         return "#a78bfa";
       case "cash":
         return "#f5a623";
+      case "investment":
+        return "#34d399";
       default:
         return "#34d399";
     }
@@ -207,7 +234,25 @@ const Withdrawals = ({ user, onSave }: Props) => {
           <div style={{ fontSize: 28, fontWeight: 800, color: "#ff4d6a", marginBottom: 4 }}>
             {formatCurrency(totalWithdrawn, user.currency)}
           </div>
-          <div style={{ fontSize: 12, color: "#7f8799" }}>{withdrawals.filter((w) => w.status === "completed").length} completed</div>
+          <div style={{ fontSize: 12, color: "#7f8799" }}>{withdrawals.filter((w) => w.status === "completed" && w.method !== "investment").length} completed</div>
+        </div>
+
+        <div
+          style={{
+            background: "linear-gradient(135deg, rgba(52, 211, 153, 0.1), rgba(16, 185, 129, 0.04))",
+            border: "1px solid rgba(52, 211, 153, 0.2)",
+            borderRadius: 12,
+            padding: 20,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+            <span style={{ fontSize: 12, color: "#5e6b80", fontWeight: 600, textTransform: "uppercase" }}>Investment proceeds</span>
+            <TrendingDown size={18} color="#34d399" />
+          </div>
+          <div style={{ fontSize: 28, fontWeight: 800, color: "#34d399", marginBottom: 4 }}>
+            {formatCurrency(investmentProceeds, user.currency)}
+          </div>
+          <div style={{ fontSize: 12, color: "#7f8799" }}>Cash returned from closed positions</div>
         </div>
 
         <div
@@ -283,8 +328,8 @@ const Withdrawals = ({ user, onSave }: Props) => {
                       <td style={{ padding: "16px 24px", color: "#e8edf5", fontSize: 14 }}>
                         {date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
                       </td>
-                      <td style={{ padding: "16px 24px", color: "#ff4d6a", fontSize: 14, fontWeight: 700 }}>
-                        -{formatCurrency(withdrawal.amount, user.currency)}
+                      <td style={{ padding: "16px 24px", color: withdrawal.method === "investment" ? "#34d399" : "#ff4d6a", fontSize: 14, fontWeight: 700 }}>
+                        {withdrawal.method === "investment" ? "+" : "-"}{formatCurrency(withdrawal.amount, user.currency)}
                       </td>
                       <td style={{ padding: "16px 24px" }}>
                         <span
@@ -301,7 +346,7 @@ const Withdrawals = ({ user, onSave }: Props) => {
                           }}
                         >
                           <CreditCard size={14} />
-                          {withdrawal.method.charAt(0).toUpperCase() + withdrawal.method.slice(1)}
+                          {withdrawal.method === "investment" ? "Investment sale" : withdrawal.method.charAt(0).toUpperCase() + withdrawal.method.slice(1)}
                         </span>
                       </td>
                       <td style={{ padding: "16px 24px", color: "#9aa5ba", fontSize: 14 }}>{withdrawal.note}</td>
@@ -321,7 +366,7 @@ const Withdrawals = ({ user, onSave }: Props) => {
                         </span>
                       </td>
                       <td style={{ padding: "16px 24px", textAlign: "center" }}>
-                        <button
+                        {withdrawal.method !== "investment" && <button
                           onClick={() => handleDeleteWithdrawal(withdrawal.id)}
                           style={{
                             background: "none",
@@ -333,7 +378,7 @@ const Withdrawals = ({ user, onSave }: Props) => {
                           title="Delete withdrawal"
                         >
                           <Trash2 size={16} />
-                        </button>
+                        </button>}
                       </td>
                     </tr>
                   );

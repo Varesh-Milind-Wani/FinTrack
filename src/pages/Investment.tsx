@@ -7,7 +7,10 @@ interface Props { user: UserAccount; onSave: (updatedUser: UserAccount) => void;
 
 const TYPE_LABELS: Record<InvestmentType, string> = { stocks: "Stocks", mutual_fund: "Mutual Fund", crypto: "Crypto", gold: "Gold", real_estate: "Real Estate", fd: "Fixed Deposit", other: "Other" };
 const TYPE_COLORS: Record<InvestmentType, string> = { stocks: "#60a5fa", mutual_fund: "#34d399", crypto: "#fbbf24", gold: "#facc15", real_estate: "#a78bfa", fd: "#22d3ee", other: "#94a3b8" };
-const emptyForm = (): Omit<Investment, "id"> => ({ name: "", type: "stocks", amount: 0, currentValue: 0, entryPrice: undefined, exitPrice: undefined, date: new Date().toISOString().split("T")[0], note: "" });
+const emptyForm = (): Omit<Investment, "id"> => ({ name: "", type: "stocks", amount: 0, currentValue: 0, quantity: 1, isClosed: false, entryPrice: undefined, exitPrice: undefined, date: new Date().toISOString().split("T")[0], note: "" });
+const getInvestmentValue = (item: Investment) => item.isClosed && item.exitPrice != null
+  ? item.exitPrice * (item.quantity ?? 1)
+  : item.currentValue;
 
 const InvestmentPage = ({ user, onSave }: Props) => {
   const investments = user.investments ?? [];
@@ -18,20 +21,52 @@ const InvestmentPage = ({ user, onSave }: Props) => {
   const [expandedInvestmentId, setExpandedInvestmentId] = useState<string | null>(null);
   const stats = useMemo(() => {
     const totalInvested = investments.reduce((total, item) => total + item.amount, 0);
-    const totalCurrent = investments.reduce((total, item) => total + item.currentValue, 0);
+    const totalCurrent = investments.reduce((total, item) => total + getInvestmentValue(item), 0);
     const pnl = totalCurrent - totalInvested;
     return { totalInvested, totalCurrent, pnl, pnlPct: totalInvested ? (pnl / totalInvested) * 100 : 0 };
   }, [investments]);
   const filtered = useMemo(() => filterType === "all" ? investments : investments.filter((item) => item.type === filterType), [investments, filterType]);
   const fmt = (value: number) => formatCurrency(value, user.currency ?? "INR");
   const openAdd = () => { setEditing(null); setForm(emptyForm()); setShowModal(true); };
-  const openEdit = (item: Investment) => { setEditing(item); setForm({ ...item, date: item.date.split("T")[0] }); setShowModal(true); };
-  const save = () => {
-    if (!form.name.trim() || form.amount <= 0 || form.currentValue < 0 || (form.entryPrice != null && form.entryPrice < 0) || (form.exitPrice != null && form.exitPrice < 0)) return;
-    const next = editing ? investments.map((item) => item.id === editing.id ? { ...editing, ...form } : item) : [{ id: crypto.randomUUID(), ...form }, ...investments];
-    onSave({ ...user, investments: next }); setShowModal(false);
+  const openEdit = (item: Investment) => {
+    const quantity = item.quantity ?? 1;
+    setEditing(item);
+    setForm({ ...item, quantity, entryPrice: item.entryPrice ?? item.amount / quantity, date: item.date.split("T")[0] });
+    setShowModal(true);
   };
-  const remove = (id: string) => { if (window.confirm("Delete this investment?")) onSave({ ...user, investments: investments.filter((item) => item.id !== id) }); };
+  const save = () => {
+    const quantity = form.quantity ?? 1;
+    const amount = quantity * (form.entryPrice ?? 0);
+    if (!form.name.trim() || amount <= 0 || form.currentValue < 0 || quantity <= 0 || (form.isClosed && (!form.exitPrice || form.exitPrice <= 0)) || (form.exitPrice != null && form.exitPrice < 0)) return;
+    const investmentId = editing?.id ?? crypto.randomUUID();
+    const existingSale = (user.withdrawals ?? []).find((entry) => entry.sourceInvestmentId === investmentId);
+    const savedForm = {
+      ...form,
+      amount,
+      quantity,
+      currentValue: form.exitPrice != null ? form.exitPrice * quantity : form.currentValue,
+    };
+    const next = editing ? investments.map((item) => item.id === editing.id ? { ...editing, ...savedForm } : item) : [{ id: investmentId, ...savedForm }, ...investments];
+    const otherWithdrawals = (user.withdrawals ?? []).filter((entry) => entry.sourceInvestmentId !== investmentId);
+    const saleWithdrawal = form.isClosed ? {
+      id: existingSale?.id ?? crypto.randomUUID(),
+      date: `${form.date}T12:00:00`,
+      amount: (form.exitPrice ?? 0) * quantity,
+      method: "investment" as const,
+      sourceInvestmentId: investmentId,
+      note: `Investment sale · ${form.name.trim()}`,
+      status: "completed" as const,
+    } : null;
+    onSave({ ...user, investments: next, withdrawals: saleWithdrawal ? [saleWithdrawal, ...otherWithdrawals] : otherWithdrawals });
+    setShowModal(false);
+  };
+  const remove = (id: string) => {
+    if (window.confirm("Delete this investment?")) onSave({
+      ...user,
+      investments: investments.filter((item) => item.id !== id),
+      withdrawals: (user.withdrawals ?? []).filter((entry) => entry.sourceInvestmentId !== id),
+    });
+  };
 
   return <div className="page-content investment-page">
     <div className="page-heading investment-heading"><div><span className="eyebrow">WEALTH MANAGEMENT</span><h1>Investment portfolio</h1><p>See your holdings, performance, and long-term growth in one place.</p></div><button className="primary-button investment-add-button" onClick={openAdd}><Plus size={17} /> Add investment</button></div>
@@ -39,11 +74,12 @@ const InvestmentPage = ({ user, onSave }: Props) => {
       <Summary label="Total invested" value={fmt(stats.totalInvested)} detail={`${investments.length} ${investments.length === 1 ? "holding" : "holdings"} tracked`} icon={<Wallet size={19} />} kind="invested" />
       <Summary label="Current value" value={fmt(stats.totalCurrent)} detail="Live portfolio value" icon={<Landmark size={19} />} kind="value" />
       <Summary label="Total P&L" value={`${stats.pnl >= 0 ? "+" : ""}${fmt(stats.pnl)}`} detail={`${stats.pnlPct >= 0 ? "+" : ""}${stats.pnlPct.toFixed(2)}% total return`} icon={stats.pnl >= 0 ? <TrendingUp size={19} /> : <TrendingDown size={19} />} kind={stats.pnl >= 0 ? "gain" : "loss"} />
-      <Summary label="Portfolio ROI" value={`${stats.pnlPct >= 0 ? "+" : ""}${stats.pnlPct.toFixed(1)}%`} detail={stats.pnl >= 0 ? "Unrealised gain" : "Unrealised loss"} icon={<ChartNoAxesCombined size={19} />} kind={stats.pnl >= 0 ? "roi-gain" : "roi-loss"} />
+      <Summary label="Portfolio ROI" value={`${stats.pnlPct >= 0 ? "+" : ""}${stats.pnlPct.toFixed(1)}%`} detail="Realised and unrealised return" icon={<ChartNoAxesCombined size={19} />} kind={stats.pnl >= 0 ? "roi-gain" : "roi-loss"} />
     </div>
     <section className="investment-filter-panel"><div><span className="eyebrow">HOLDINGS</span><p>Filter by asset class</p></div><div className="investment-filter-chips">{(["all", ...Object.keys(TYPE_LABELS)] as (InvestmentType | "all")[]).map((type) => <button key={type} onClick={() => setFilterType(type)} className={filterType === type ? "investment-filter active" : "investment-filter"}>{type === "all" ? "All types" : TYPE_LABELS[type]}</button>)}</div></section>
-    <section className="investment-holdings-card"><div className="investment-holdings-header"><div><h3>Portfolio holdings</h3><p>{filtered.length} of {investments.length} holdings shown</p></div><span className="investment-holdings-value">{fmt(stats.totalCurrent)}</span></div><div className="investment-table-scroll"><table className="investment-table"><thead><tr><th>Name</th><th>Type</th><th>Date</th><th>Invested</th><th>Current value</th><th>P&amp;L</th><th>Return</th><th>Note</th><th className="investment-actions-heading">Actions</th></tr></thead><tbody>{filtered.length === 0 ? <tr><td colSpan={9} className="investment-empty"><Wallet size={32} /><p>No investments yet. Click <strong>Add investment</strong> to get started.</p></td></tr> : filtered.map((item) => {
-      const pnl = item.currentValue - item.amount;
+    <section className="investment-holdings-card"><div className="investment-holdings-header"><div><h3>Portfolio holdings</h3><p>{filtered.length} of {investments.length} investments shown</p></div><span className="investment-holdings-value">{fmt(stats.totalCurrent)}</span></div><div className="investment-table-scroll"><table className="investment-table"><thead><tr><th>Name</th><th>Type</th><th>Status</th><th>Quantity</th><th>Date</th><th>Invested</th><th>Current / exit value</th><th>P&amp;L</th><th>Return</th><th>Note</th><th className="investment-actions-heading">Actions</th></tr></thead><tbody>{filtered.length === 0 ? <tr><td colSpan={11} className="investment-empty"><Wallet size={32} /><p>No investments yet. Click <strong>Add investment</strong> to get started.</p></td></tr> : filtered.map((item) => {
+      const displayedValue = getInvestmentValue(item);
+      const pnl = displayedValue - item.amount;
       const pct = item.amount ? pnl / item.amount * 100 : 0;
       const positive = pnl >= 0;
       const isExpanded = expandedInvestmentId === item.id;
@@ -53,9 +89,11 @@ const InvestmentPage = ({ user, onSave }: Props) => {
         <tr>
           <td className="investment-name">{item.name}</td>
           <td><span className="investment-type-badge" style={{ color: TYPE_COLORS[item.type], borderColor: `${TYPE_COLORS[item.type]}55`, backgroundColor: `${TYPE_COLORS[item.type]}16` }}>{TYPE_LABELS[item.type]}</span></td>
+          <td><span className={`investment-status-badge ${item.isClosed ? "closed" : "open"}`}>{item.isClosed ? "Closed" : "Open"}</span></td>
+          <td>{item.quantity ?? 1}</td>
           <td className="investment-date">{date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
           <td className="investment-money">{fmt(item.amount)}</td>
-          <td className="investment-money">{fmt(item.currentValue)}</td>
+          <td className="investment-money">{fmt(displayedValue)}</td>
           <td className={positive ? "investment-positive" : "investment-negative"}>{positive ? "+" : ""}{fmt(pnl)}</td>
           <td className={positive ? "investment-positive" : "investment-negative"}>{positive ? "+" : ""}{pct.toFixed(2)}%</td>
           <td className="investment-note">{item.note || "—"}</td>
@@ -66,7 +104,7 @@ const InvestmentPage = ({ user, onSave }: Props) => {
           </div></td>
         </tr>
         <tr className={`investment-detail-row ${isExpanded ? "is-expanded" : ""}`}>
-          <td colSpan={9}>
+          <td colSpan={11}>
             <div className="investment-detail-disclosure" aria-hidden={!isExpanded}>
               <div className="investment-detail-disclosure-inner">
                 <section className="investment-details" aria-label={`${item.name} investment details`}>
@@ -76,8 +114,10 @@ const InvestmentPage = ({ user, onSave }: Props) => {
                   </div>
                   <dl className="investment-details-grid">
                     <div><dt>Asset class</dt><dd>{TYPE_LABELS[item.type]}</dd></div>
+                    <div><dt>Position status</dt><dd>{item.isClosed ? "Closed · exited" : "Open · holding"}</dd></div>
+                    <div><dt>Quantity</dt><dd>{item.quantity ?? 1}</dd></div>
                     <div><dt>Amount invested</dt><dd>{fmt(item.amount)}</dd></div>
-                    <div><dt>Current value</dt><dd>{fmt(item.currentValue)}</dd></div>
+                    <div><dt>{item.isClosed ? "Exit proceeds" : "Current value"}</dt><dd>{fmt(displayedValue)}</dd></div>
                     <div><dt>Entry price</dt><dd>{item.entryPrice != null ? fmt(item.entryPrice) : "Not set"}</dd></div>
                     <div><dt>Exit price</dt><dd>{item.exitPrice != null ? fmt(item.exitPrice) : "Not set"}</dd></div>
                     <div><dt>Profit / Loss</dt><dd className={positive ? "investment-positive" : "investment-negative"}>{positive ? "+" : "−"}{fmt(Math.abs(pnl))}</dd></div>
@@ -91,12 +131,112 @@ const InvestmentPage = ({ user, onSave }: Props) => {
         </tr>
       </Fragment>;
     })}</tbody></table></div></section>
-    {showModal && <InvestmentModal editing={editing} form={form} setForm={setForm} onClose={() => setShowModal(false)} onSave={save} />}
+    {showModal && <InvestmentModal editing={editing} form={form} currency={user.currency ?? "INR"} setForm={setForm} onClose={() => setShowModal(false)} onSave={save} />}
   </div>;
 };
 
 const Summary = ({ label, value, detail, icon, kind }: { label: string; value: string; detail: string; icon: React.ReactNode; kind: string }) => <div className={`investment-summary-card ${kind}`}><div className="investment-summary-top"><span>{label}</span><div className="investment-summary-icon">{icon}</div></div><strong>{value}</strong><small>{detail}</small></div>;
 
-const InvestmentModal = ({ editing, form, setForm, onClose, onSave }: { editing: Investment | null; form: Omit<Investment, "id">; setForm: React.Dispatch<React.SetStateAction<Omit<Investment, "id">>>; onClose: () => void; onSave: () => void }) => <div className="modal-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="transaction-modal investment-modal" role="dialog" aria-modal="true" aria-labelledby="investment-modal-title" onSubmit={(event) => { event.preventDefault(); onSave(); }}><div className="modal-header"><div className="modal-header-text"><span className="eyebrow">{editing ? "EDIT INVESTMENT" : "NEW INVESTMENT"}</span><h2 id="investment-modal-title">{editing ? "Edit investment" : "Add investment"}</h2><p>Record your holding and track its purchase and sale prices.</p></div><button type="button" className="close-button" onClick={onClose} aria-label="Close dialog"><X size={18} /></button></div><div className="modal-body"><div className="form-grid"><label>Investment name<input required value={form.name} placeholder="e.g. Reliance Industries" onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} /></label><label>Asset type<select value={form.type} onChange={(event) => setForm((current) => ({ ...current, type: event.target.value as InvestmentType }))}>{Object.entries(TYPE_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label><label>Amount invested<input type="number" min="0.01" step="any" required value={form.amount || ""} onChange={(event) => setForm((current) => ({ ...current, amount: Number(event.target.value) }))} /></label><label>Current value<input type="number" min="0" step="any" value={form.currentValue || ""} onChange={(event) => setForm((current) => ({ ...current, currentValue: Number(event.target.value) }))} /></label><label>Entry price <span className="investment-field-hint">Per unit at purchase</span><input type="number" min="0" step="any" inputMode="decimal" value={form.entryPrice ?? ""} placeholder="Optional" onChange={(event) => setForm((current) => ({ ...current, entryPrice: event.target.value === "" ? undefined : Number(event.target.value) }))} /></label><label>Exit price <span className="investment-field-hint">Per unit when sold</span><input type="number" min="0" step="any" inputMode="decimal" value={form.exitPrice ?? ""} placeholder="Optional" onChange={(event) => setForm((current) => ({ ...current, exitPrice: event.target.value === "" ? undefined : Number(event.target.value) }))} /></label><label>Date<input type="date" value={form.date} onChange={(event) => setForm((current) => ({ ...current, date: event.target.value }))} /></label></div><label className="investment-note-field">Note<input value={form.note} placeholder="e.g. Long-term holding" onChange={(event) => setForm((current) => ({ ...current, note: event.target.value }))} /></label></div><div className="modal-footer"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button type="submit" className="primary-button"><Check size={15} /> {editing ? "Save changes" : "Add investment"}</button></div></form></div>;
+const InvestmentModal = ({ editing, form, currency, setForm, onClose, onSave }: { editing: Investment | null; form: Omit<Investment, "id">; currency: string; setForm: React.Dispatch<React.SetStateAction<Omit<Investment, "id">>>; onClose: () => void; onSave: () => void }) => {
+  const quantity = form.quantity ?? 1;
+  const investmentAmount = quantity * (form.entryPrice ?? 0);
+  const exitValue = form.exitPrice != null ? form.exitPrice * quantity : form.currentValue;
+  const realizedPnl = exitValue - investmentAmount;
+
+  return <div className="modal-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <form
+      className="transaction-modal investment-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="investment-modal-title"
+      onSubmit={(event) => { event.preventDefault(); onSave(); }}
+    >
+      <div className="modal-header">
+        <div className="modal-header-text">
+          <span className="eyebrow">{editing ? "EDIT INVESTMENT" : "NEW INVESTMENT"}</span>
+          <h2 id="investment-modal-title">{editing ? "Edit investment" : "Add investment"}</h2>
+          <p>Record your holding and track its purchase and sale prices.</p>
+        </div>
+        <button type="button" className="close-button" onClick={onClose} aria-label="Close dialog"><X size={18} /></button>
+      </div>
+
+      <div className="modal-body">
+        <div className="form-grid">
+          <label>
+            Investment name
+            <input required value={form.name} placeholder="e.g. Reliance Industries" onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} />
+          </label>
+          <label>
+            Asset type
+            <select value={form.type} onChange={(event) => setForm((current) => ({ ...current, type: event.target.value as InvestmentType }))}>
+              {Object.entries(TYPE_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+            </select>
+          </label>
+          <label>
+            Quantity
+            <input type="number" min="0.000001" step="any" inputMode="decimal" required value={form.quantity ?? 1} onChange={(event) => setForm((current) => {
+              const nextQuantity = Number(event.target.value);
+              return { ...current, quantity: nextQuantity, currentValue: current.exitPrice != null ? current.exitPrice * nextQuantity : current.currentValue };
+            })} />
+          </label>
+          <label>
+            <span className="investment-label-row"><span>Entry price</span><span className="investment-field-hint">Per unit at purchase</span></span>
+            <input type="number" min="0.01" step="any" inputMode="decimal" required value={form.entryPrice ?? ""} placeholder="Enter price per unit" onChange={(event) => setForm((current) => ({ ...current, entryPrice: event.target.value === "" ? undefined : Number(event.target.value) }))} />
+          </label>
+          <label>
+            <span className="investment-label-row"><span>Amount invested</span><span className="investment-field-hint">Quantity × entry price</span></span>
+            <input type="number" value={investmentAmount || ""} placeholder="Calculated automatically" readOnly aria-readonly="true" />
+          </label>
+          <label>
+            Current value
+            <input
+              type="number"
+              min="0"
+              step="any"
+              value={form.exitPrice != null ? form.exitPrice * quantity : form.currentValue || ""}
+              placeholder={form.exitPrice != null ? "Calculated from exit price × quantity" : "Enter current value"}
+              readOnly={form.exitPrice != null}
+              aria-readonly={form.exitPrice != null}
+              onChange={(event) => setForm((current) => ({ ...current, currentValue: Number(event.target.value) }))}
+            />
+          </label>
+          <label>
+            <span className="investment-label-row"><span>Exit price</span><span className="investment-field-hint">Per unit when sold</span></span>
+            <input type="number" min="0" step="any" inputMode="decimal" required={Boolean(form.isClosed)} value={form.exitPrice ?? ""} placeholder={form.isClosed ? "Required to close position" : "Optional"} onChange={(event) => setForm((current) => {
+              const exitPrice = event.target.value === "" ? undefined : Number(event.target.value);
+              return { ...current, exitPrice, currentValue: exitPrice != null ? exitPrice * (current.quantity ?? 1) : current.currentValue };
+            })} />
+          </label>
+          <label>
+            Date
+            <input type="date" value={form.date} onChange={(event) => setForm((current) => ({ ...current, date: event.target.value }))} />
+          </label>
+          <label className="investment-note-field">
+            <span className="investment-label-row"><span>Note</span><span className="investment-field-hint">Optional</span></span>
+            <input value={form.note} placeholder="e.g. Long-term holding" onChange={(event) => setForm((current) => ({ ...current, note: event.target.value }))} />
+          </label>
+        </div>
+        <div className="investment-closed-control">
+          <label className="investment-closed-toggle">
+            <input type="checkbox" checked={Boolean(form.isClosed)} onChange={(event) => setForm((current) => ({ ...current, isClosed: event.target.checked }))} />
+            <span><strong>Closed position</strong><small>Mark this investment as exited or sold.</small></span>
+          </label>
+          {form.isClosed && (
+            <div className={`investment-realized-result ${realizedPnl >= 0 ? "positive" : "negative"}`} aria-live="polite">
+              <span>Realized profit / loss</span>
+              <strong>{realizedPnl >= 0 ? "+" : "−"}{formatCurrency(Math.abs(realizedPnl), currency)}</strong>
+              <small>{form.exitPrice != null ? "Exit price × quantity − amount invested" : "Exit value − amount invested"}</small>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="modal-footer">
+        <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
+        <button type="submit" className="primary-button"><Check size={15} /> {editing ? "Save changes" : "Add investment"}</button>
+      </div>
+    </form>
+  </div>
+};
 
 export default InvestmentPage;

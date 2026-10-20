@@ -2,73 +2,23 @@ import { useEffect, useMemo, useState } from "react";
 import {
   CalendarDays,
   Check,
+  Database,
+  KeyRound,
+  ListFilter,
   Lock,
   LockOpen,
   Pencil,
   Plus,
+  RotateCcw,
   Save,
-  ShieldCheck,
+  Search,
   Trash2,
-  TrendingUp,
-  User,
-  Wallet,
 } from "lucide-react";
 
 import type { DefaultCostSchedule, UserAccount } from "../types/finance";
 import { formatCurrency } from "../utils/money";
 import { calculateCurrentBalance, getAuthoritativeBalance } from "../utils/balance";
-import { addSampleTradesToUser } from "../utils/storage";
-import { isTransactionMonthLocked } from "../utils/monthLocks";
-
-const getCostForDate = (
-  date: string,
-  schedules: DefaultCostSchedule[],
-  fallback = 0
-) => {
-  const transactionDate = new Date(date);
-  const dateKey = `${transactionDate.getFullYear()}-${String(transactionDate.getMonth() + 1).padStart(2, "0")}-${String(transactionDate.getDate()).padStart(2, "0")}`;
-
-  return [...schedules]
-    .filter((schedule) => schedule.startDate <= dateKey)
-    .sort((left, right) => right.startDate.localeCompare(left.startDate))[0]
-    ?.amount ?? fallback;
-};
-
-const recalculateTransactions = (
-  transactions: UserAccount["transactions"],
-  schedules: DefaultCostSchedule[],
-  fallbackCost = 0,
-  lockedMonths: string[] = [],
-) => transactions.map((transaction) => {
-  if (isTransactionMonthLocked(transaction, lockedMonths)) return transaction;
-  const grossAmount = transaction.grossAmount ?? transaction.amount;
-  const costAmount = getCostForDate(transaction.date, schedules, fallbackCost);
-  const amount = transaction.type === "profit"
-    ? Math.max(0, grossAmount - costAmount)
-    : grossAmount + costAmount;
-
-  return {
-    ...transaction,
-    amount,
-    price: grossAmount,
-    grossAmount,
-    costAmount,
-  };
-});
-
-const withRecalculatedCosts = (
-  user: UserAccount,
-  schedules: DefaultCostSchedule[],
-) => {
-  const transactions = recalculateTransactions(
-    user.transactions,
-    schedules,
-    user.defaultCostAmount ?? 0,
-    user.lockedMonths,
-  );
-  const updatedUser = { ...user, defaultCostSchedules: schedules, transactions };
-  return { ...updatedUser, currentBalance: calculateCurrentBalance(updatedUser) };
-};
+import { createBalancePinSalt, hashBalancePin, verifyBalancePin } from "../utils/balancePin";
 
 interface Props {
   user: UserAccount;
@@ -80,14 +30,20 @@ const Settings = ({ user, onSave }: Props) => {
     return getAuthoritativeBalance(user);
   }, [user.startingBalance, user.transactions, user.currentBalance]);
 
-  const [name, setName] = useState(user.name);
-  const [email, setEmail] = useState(user.email);
   const [startingBalance, setStartingBalance] = useState(
     String(user.startingBalance)
   );
   const [isStartingBalanceLocked, setIsStartingBalanceLocked] = useState(
     user.startingBalanceLocked ?? false
   );
+  const [showUnlockPrompt, setShowUnlockPrompt] = useState(false);
+  const [unlockPassword, setUnlockPassword] = useState("");
+  const [unlockStatus, setUnlockStatus] = useState<string | null>(null);
+  const [currentBalancePassword, setCurrentBalancePassword] = useState("");
+  const [newBalancePassword, setNewBalancePassword] = useState("");
+  const [confirmBalancePassword, setConfirmBalancePassword] = useState("");
+  const [resetBalancePinMode, setResetBalancePinMode] = useState(false);
+  const [passwordStatus, setPasswordStatus] = useState<string | null>(null);
   const [currentBalanceInput, setCurrentBalanceInput] = useState(
     String(user.currentBalance ?? currentBalance)
   );
@@ -107,10 +63,11 @@ const Settings = ({ user, onSave }: Props) => {
   const [scheduleAmount, setScheduleAmount] = useState("");
   const [scheduleStatus, setScheduleStatus] = useState<string | null>(null);
   const [editingScheduleId, setEditingScheduleId] = useState<string | null>(null);
+  const [scheduleSearch, setScheduleSearch] = useState("");
+  const [scheduleDateFilter, setScheduleDateFilter] = useState("all");
+  const [scheduleSort, setScheduleSort] = useState<{ key: "date" | "name" | "amount"; direction: "asc" | "desc" }>({ key: "date", direction: "desc" });
 
   useEffect(() => {
-    setName(user.name);
-    setEmail(user.email);
     setStartingBalance(String(user.startingBalance));
     setIsStartingBalanceLocked(user.startingBalanceLocked ?? false);
     setCurrentBalanceInput(String(user.currentBalance ?? currentBalance));
@@ -119,8 +76,6 @@ const Settings = ({ user, onSave }: Props) => {
     setSchedules(user.defaultCostSchedules ?? []);
   }, [
     user.currency,
-    user.email,
-    user.name,
     user.startingBalance,
     user.defaultCostSchedules,
     user.currentBalance,
@@ -131,13 +86,8 @@ const Settings = ({ user, onSave }: Props) => {
     const nextBalance = Number(startingBalance);
     const nextCurrentBalance = Number(currentBalanceInput);
 
-    if (!name.trim() || !email.trim()) {
-      setStatus("Name and email cannot be empty.");
-      return;
-    }
-
     // If starting balance is locked, don't allow changes to it
-    if (isStartingBalanceLocked && nextBalance !== user.startingBalance) {
+    if (isStartingBalanceLocked && user.startingBalanceLocked && nextBalance !== user.startingBalance) {
       setStatus("Starting balance is locked. Unlock to make changes.");
       return;
     }
@@ -152,22 +102,13 @@ const Settings = ({ user, onSave }: Props) => {
       return;
     }
 
-    const recalculatedTransactions = recalculateTransactions(
-      user.transactions,
-      schedules,
-      user.defaultCostAmount ?? 0,
-      user.lockedMonths,
-    );
     const balanceBeforeManualAdjustment = calculateCurrentBalance({
       ...user,
       startingBalance: nextBalance,
-      transactions: recalculatedTransactions,
       balanceAdjustment: 0,
     });
     const updatedUser = {
       ...user,
-      name: name.trim(),
-      email: email.trim(),
       startingBalance: nextBalance,
       startingBalanceLocked: isStartingBalanceLocked,
       currentBalance: nextCurrentBalance,
@@ -178,11 +119,98 @@ const Settings = ({ user, onSave }: Props) => {
       investmentIncluded,
       defaultCostAmount: user.defaultCostAmount ?? 0,
       defaultCostSchedules: schedules,
-      transactions: recalculatedTransactions,
+      transactions: user.transactions,
     };
 
     onSave(updatedUser);
     setStatus("Settings saved successfully.");
+  };
+
+  const handleLockToggle = () => {
+    setPasswordStatus(null);
+    setUnlockStatus(null);
+    if (isStartingBalanceLocked) {
+      if (!user.startingBalancePasswordHash || !user.startingBalancePasswordSalt) {
+        setPasswordStatus("Set a 4-digit PIN below before unlocking the starting balance.");
+        return;
+      }
+      setShowUnlockPrompt(true);
+      return;
+    }
+
+    if (!user.startingBalancePasswordHash || !user.startingBalancePasswordSalt) {
+      setPasswordStatus("Set a 4-digit PIN below before locking the starting balance.");
+      return;
+    }
+    setIsStartingBalanceLocked(true);
+  };
+
+  const handleUnlockBalance = async () => {
+    if (!user.startingBalancePasswordHash || !user.startingBalancePasswordSalt) return;
+    setUnlockStatus(null);
+    try {
+      if (!/^\d{4}$/.test(unlockPassword)) {
+        setUnlockStatus("Enter your 4-digit PIN.");
+        return;
+      }
+      if (!(await verifyBalancePin(unlockPassword, user))) {
+        setUnlockStatus("Incorrect PIN. Please try again.");
+        return;
+      }
+      setIsStartingBalanceLocked(false);
+      setShowUnlockPrompt(false);
+      setUnlockPassword("");
+      setUnlockStatus("PIN verified. Save settings to apply your changes.");
+      setPasswordStatus("Starting balance unlocked. Save settings to apply your changes.");
+    } catch {
+      setUnlockStatus("PIN verification is unavailable in this browser.");
+    }
+  };
+
+  const handleSaveBalancePassword = async () => {
+    setPasswordStatus(null);
+    if (!/^\d{4}$/.test(newBalancePassword)) {
+      setPasswordStatus("Choose a PIN with exactly 4 digits.");
+      return;
+    }
+    if (newBalancePassword !== confirmBalancePassword) {
+      setPasswordStatus("The new PINs do not match.");
+      return;
+    }
+
+    try {
+      if (user.startingBalancePasswordHash) {
+        if (resetBalancePinMode) {
+          if (!currentBalancePassword || currentBalancePassword !== user.password) {
+            setPasswordStatus("Enter your account password to reset the PIN.");
+            return;
+          }
+        } else if (user.startingBalancePasswordSalt) {
+          if (!(await verifyBalancePin(currentBalancePassword, user))) {
+            setPasswordStatus("Enter your current PIN to change it, or use Reset PIN with your account password.");
+            return;
+          }
+        } else {
+          setPasswordStatus("This PIN cannot be verified. Use Reset PIN with your account password.");
+          return;
+        }
+      }
+
+      const salt = createBalancePinSalt();
+      const passwordHash = await hashBalancePin(newBalancePassword, salt);
+      onSave({
+        ...user,
+        startingBalancePasswordSalt: salt,
+        startingBalancePasswordHash: passwordHash,
+      });
+      setCurrentBalancePassword("");
+      setNewBalancePassword("");
+      setConfirmBalancePassword("");
+      setPasswordStatus(resetBalancePinMode ? "Starting balance PIN reset successfully." : "Starting balance PIN saved.");
+      setResetBalancePinMode(false);
+    } catch {
+      setPasswordStatus("Could not save the PIN in this browser.");
+    }
   };
 
   const getScheduleStatus = (startDate: string) => {
@@ -224,7 +252,7 @@ const Settings = ({ user, onSave }: Props) => {
     ).sort((left, right) => right.startDate.localeCompare(left.startDate));
 
     setSchedules(nextSchedules);
-    onSave(withRecalculatedCosts(user, nextSchedules));
+    onSave({ ...user, defaultCostSchedules: nextSchedules });
     setScheduleName("");
     setScheduleDate("");
     setScheduleAmount("");
@@ -244,7 +272,7 @@ const Settings = ({ user, onSave }: Props) => {
     setScheduleStatus(null);
   };
 
-  const handleCancelScheduleEdit = () => {
+  const handleClearScheduleForm = () => {
     setEditingScheduleId(null);
     setScheduleDate("");
     setScheduleName("");
@@ -255,18 +283,47 @@ const Settings = ({ user, onSave }: Props) => {
   const handleDeleteSchedule = (id: string) => {
     const nextSchedules = schedules.filter((schedule) => schedule.id !== id);
     setSchedules(nextSchedules);
-    onSave(withRecalculatedCosts(user, nextSchedules));
+    onSave({ ...user, defaultCostSchedules: nextSchedules });
+  };
+
+  const today = new Date();
+  const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const thirtyDaysAgo = new Date(today);
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  const thirtyDaysAgoKey = `${thirtyDaysAgo.getFullYear()}-${String(thirtyDaysAgo.getMonth() + 1).padStart(2, "0")}-${String(thirtyDaysAgo.getDate()).padStart(2, "0")}`;
+  const visibleSchedules = schedules
+    .filter((schedule) => {
+      const matchesName = schedule.name.toLowerCase().includes(scheduleSearch.trim().toLowerCase());
+      const matchesDate = scheduleDateFilter === "all"
+        || (scheduleDateFilter === "30days" && schedule.startDate >= thirtyDaysAgoKey && schedule.startDate <= todayKey)
+        || (scheduleDateFilter === "year" && schedule.startDate.startsWith(String(today.getFullYear())));
+      return matchesName && matchesDate;
+    })
+    .sort((left, right) => {
+      const comparison = scheduleSort.key === "date"
+        ? left.startDate.localeCompare(right.startDate)
+        : scheduleSort.key === "name"
+          ? left.name.localeCompare(right.name)
+          : left.amount - right.amount;
+      return scheduleSort.direction === "asc" ? comparison : -comparison;
+    });
+
+  const toggleScheduleSort = (key: "date" | "name" | "amount") => {
+    setScheduleSort((current) => ({
+      key,
+      direction: current.key === key && current.direction === "asc" ? "desc" : "asc",
+    }));
   };
 
   return (
-    <div className="page-content">
+    <div className="page-content settings-page">
       <div className="page-heading">
         <div>
           <span className="eyebrow">ACCOUNT</span>
 
           <h1>Settings</h1>
 
-          <p>Update your profile basics and account defaults.</p>
+          <p>Manage your account balance, currency, and security settings.</p>
         </div>
       </div>
 
@@ -274,36 +331,17 @@ const Settings = ({ user, onSave }: Props) => {
         <div className="chart-panel">
           <div className="chart-panel-header">
             <div>
-              <h3>Profile details</h3>
-              <p>These values are stored locally with your account.</p>
+              <h3>Account defaults</h3>
+              <p>Set your starting balance and preferred display currency.</p>
             </div>
           </div>
-
           <div className="form-grid">
-            <label>
-              Full name
-              <input
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder="Your full name"
-              />
-            </label>
-
-            <label>
-              Email address
-              <input
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder="you@example.com"
-              />
-            </label>
-
-            <label className="form-span-full">
+            <div className="form-span-full">
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
                 <span>Starting balance</span>
                 <button
                   type="button"
-                  onClick={() => setIsStartingBalanceLocked(!isStartingBalanceLocked)}
+                  onClick={handleLockToggle}
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -339,7 +377,36 @@ const Settings = ({ user, onSave }: Props) => {
                   cursor: isStartingBalanceLocked ? "not-allowed" : "text",
                 }}
               />
-            </label>
+              {showUnlockPrompt && isStartingBalanceLocked && (
+                <div className="balance-unlock-form">
+                  <label>
+                    4-digit PIN
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      maxLength={4}
+                      autoComplete="current-password"
+                      value={unlockPassword}
+                      onChange={(event) => { setUnlockPassword(event.target.value.replace(/\D/g, "").slice(0, 4)); setUnlockStatus(null); }}
+                      onKeyDown={(event) => { if (event.key === "Enter") void handleUnlockBalance(); }}
+                      placeholder="Enter 4-digit PIN"
+                    />
+                  </label>
+                  <button type="button" className="primary-button" onClick={() => void handleUnlockBalance()}>
+                    <LockOpen size={15} /> Unlock balance
+                  </button>
+                  <button type="button" className="secondary-button" onClick={() => { setShowUnlockPrompt(false); setUnlockPassword(""); setUnlockStatus(null); }}>
+                    Cancel
+                  </button>
+                </div>
+              )}
+              {unlockStatus && (
+                <div className={unlockStatus.startsWith("PIN verified") ? "field-hint" : "error-message"} role="status">
+                  {unlockStatus}
+                </div>
+              )}
+            </div>
 
             <label>
               Currency
@@ -357,29 +424,9 @@ const Settings = ({ user, onSave }: Props) => {
             </label>
 
           </div>
-
-          <div className="modal-footer">
-            <button className="primary-button" onClick={handleSave}>
-              <Save size={16} />
-              Save changes
-            </button>
-          </div>
-
-          {status && (
-            <div
-              className={
-                status.includes("success")
-                  ? "field-hint"
-                  : "error-message"
-              }
-              style={{ marginTop: 12 }}
-            >
-              {status}
-            </div>
-          )}
         </div>
 
-        <div className="chart-panel">
+        <div className="chart-panel settings-account-summary">
           <div className="chart-panel-header">
             <div>
               <h3>Account summary</h3>
@@ -387,17 +434,7 @@ const Settings = ({ user, onSave }: Props) => {
             </div>
           </div>
 
-          <div className="analytics-summary">
-            <div className="snapshot-item">
-              <span>User</span>
-              <strong>{user.name}</strong>
-            </div>
-
-            <div className="snapshot-item">
-              <span>Email</span>
-              <strong>{user.email}</strong>
-            </div>
-
+          <div className="analytics-summary settings-summary-grid">
             <div className="snapshot-item">
               <span>Current balance</span>
               {isEditingBalance ? (
@@ -516,98 +553,121 @@ const Settings = ({ user, onSave }: Props) => {
             </div>
           </div>
 
-          <div className="storage-info" style={{ marginTop: 16 }}>
-            <div className="storage-icon">
-              <ShieldCheck size={16} />
-            </div>
-
-            <div>
-              <strong>Your data stays on this device</strong>
-              <p>
-                FinTrack saves the account and transaction history in
-                localStorage, so editing settings updates the same local
-                profile.
-              </p>
-            </div>
-          </div>
-
-          <div className="storage-info" style={{ marginTop: 12 }}>
-            <div className="storage-icon">
-              <User size={16} />
-            </div>
-
-            <div>
-              <strong>Profile changes are immediate</strong>
-              <p>
-                Save changes once and the sidebar profile details will reflect
-                the new values right away.
-              </p>
-            </div>
-          </div>
-
-          <div className="storage-info" style={{ marginTop: 12 }}>
-            <div className="storage-icon">
-              <Wallet size={16} />
-            </div>
-
-            <div>
-              <strong>Current balance is editable</strong>
-              <p>
-                Update your current balance directly. This reflects your actual portfolio value
-                and is used for analytics throughout the app.
-              </p>
-            </div>
-          </div>
-
-          <div style={{ marginTop: 18 }}>
-            <button
-              type="button"
-              className="secondary-button"
-              style={{ width: "100%", justifyContent: "center", gap: 8, padding: "10px 16px" }}
-              onClick={() => {
-                const updatedUser = addSampleTradesToUser(user);
-                onSave(updatedUser);
-                setStatus("Sample profit & loss trades added successfully!");
-              }}
-            >
-              <TrendingUp size={16} /> Add Sample Profit &amp; Loss Trades
-            </button>
-          </div>
         </div>
       </div>
+
+      <section className="chart-panel balance-password-panel">
+        <div className="chart-panel-header">
+          <div>
+            <h3><KeyRound size={17} /> Starting balance PIN</h3>
+            <p>{resetBalancePinMode ? "Verify your account password and choose a new 4-digit PIN." : user.startingBalancePasswordHash ? "Update the 4-digit PIN required to unlock your starting balance." : "Set a 4-digit PIN before locking or unlocking your starting balance."}</p>
+          </div>
+          <span className={`password-state ${user.startingBalancePasswordHash ? "configured" : "not-configured"}`}>
+            {user.startingBalancePasswordHash ? "PIN SET" : "SETUP REQUIRED"}
+          </span>
+        </div>
+        <div className="balance-password-fields">
+          {user.startingBalancePasswordHash && (
+            <label>
+              {resetBalancePinMode ? "Account password" : "Current PIN"}
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={currentBalancePassword}
+                onChange={(event) => setCurrentBalancePassword(event.target.value)}
+                placeholder={resetBalancePinMode ? "Enter your account password" : "Enter current 4-digit PIN"}
+              />
+            </label>
+          )}
+          <label>
+            New 4-digit PIN
+            <input
+              type="password"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={4}
+              autoComplete="new-password"
+              value={newBalancePassword}
+              onChange={(event) => setNewBalancePassword(event.target.value.replace(/\D/g, "").slice(0, 4))}
+              placeholder="Enter 4 digits"
+            />
+          </label>
+          <label>
+            Confirm 4-digit PIN
+            <input
+              type="password"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={4}
+              autoComplete="new-password"
+              value={confirmBalancePassword}
+              onChange={(event) => setConfirmBalancePassword(event.target.value.replace(/\D/g, "").slice(0, 4))}
+              placeholder="Re-enter 4 digits"
+            />
+          </label>
+          <button type="button" className="primary-button" onClick={() => void handleSaveBalancePassword()}>
+            <KeyRound size={15} /> {resetBalancePinMode ? "Reset PIN" : user.startingBalancePasswordHash ? "Update PIN" : "Set PIN"}
+          </button>
+        </div>
+        {user.startingBalancePasswordHash && (
+          <button
+            type="button"
+            className="balance-pin-reset-button"
+            onClick={() => {
+              setResetBalancePinMode((active) => !active);
+              setCurrentBalancePassword("");
+              setNewBalancePassword("");
+              setConfirmBalancePassword("");
+              setPasswordStatus(null);
+            }}
+          >
+            {resetBalancePinMode ? "Cancel PIN reset" : "Forgot PIN? Reset with account password"}
+          </button>
+        )}
+        {passwordStatus && <div className={passwordStatus.includes("saved") || passwordStatus.includes("reset successfully") || passwordStatus.includes("unlocked") ? "field-hint" : "error-message"} role="status">{passwordStatus}</div>}
+      </section>
 
       <section className="chart-panel default-cost-panel">
         <div className="chart-panel-header">
           <div>
-            <h3>Default Cost Amount</h3>
+            <h3 className="cost-section-title"><span className="cost-section-icon"><Database size={19} /></span>Default Cost Amount</h3>
             <p>Create dated costs. The matching cost is selected automatically when you add a transaction.</p>
           </div>
           <span className="live-badge">DATE BASED</span>
         </div>
 
         <div className="default-cost-create">
-          <div className="create-card-icon"><Plus size={18} /></div>
+          <div className="cost-create-heading">
+            <div className="create-card-icon"><Plus size={18} /></div>
+            <div>
+              <strong>{editingScheduleId ? "Edit Cost Schedule" : "Add Cost Schedule"}</strong>
+              <span>Set a start date, name, and cost amount to create a default cost.</span>
+            </div>
+          </div>
           <div className="default-cost-fields">
             <label>
-              Start date
-              <input type="date" value={scheduleDate} onChange={(event) => setScheduleDate(event.target.value)} />
+              <span className="cost-field-label">Start date <span className="required-mark">*</span></span>
+              <input type="date" required value={scheduleDate} onChange={(event) => setScheduleDate(event.target.value)} />
             </label>
             <label>
-              Name
-              <input value={scheduleName} onChange={(event) => setScheduleName(event.target.value)} placeholder="Default Cost Amount" />
+              <span className="cost-field-label">Name <span className="required-mark">*</span></span>
+              <input required value={scheduleName} onChange={(event) => setScheduleName(event.target.value)} placeholder="e.g. Brokerage, Service Fee" />
             </label>
             <label>
-              Cost ({currency})
-              <input type="number" min="0.01" step="0.01" value={scheduleAmount} onChange={(event) => setScheduleAmount(event.target.value)} placeholder="500" />
+              <span className="cost-field-label">Cost ({currency}) <span className="required-mark">*</span></span>
+              <div className="cost-amount-input">
+                <span>{new Intl.NumberFormat("en-IN", { style: "currency", currency, maximumFractionDigits: 0 }).formatToParts(0).find((part) => part.type === "currency")?.value ?? currency}</span>
+                <input type="number" min="0.01" step="0.01" required value={scheduleAmount} onChange={(event) => setScheduleAmount(event.target.value)} placeholder="e.g. 500" />
+              </div>
             </label>
-            <button type="button" className="primary-button create-cost-button" onClick={handleCreateSchedule}>
-              <Plus size={16} /> {editingScheduleId ? "Update cost" : "Create new"}
-            </button>
-            {editingScheduleId && (
-              <button type="button" className="secondary-button cancel-cost-button" onClick={handleCancelScheduleEdit}>
-                Cancel
+            <div className="cost-form-actions">
+              <button type="button" className="secondary-button clear-cost-button" onClick={handleClearScheduleForm}>
+                <RotateCcw size={15} /> Clear
               </button>
-            )}
+              <button type="button" className="primary-button create-cost-button" onClick={handleCreateSchedule}>
+                <Plus size={16} /> {editingScheduleId ? "Update cost" : "Add cost schedule"}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -619,21 +679,42 @@ const Settings = ({ user, onSave }: Props) => {
 
         <div className="default-cost-history">
           <div className="history-heading">
-            <div>
-              <strong>Full history</strong>
-              <span>Every dated default cost</span>
+            <div className="history-title">
+              <span className="history-icon"><ListFilter size={17} /></span>
+              <div>
+                <strong>Full history</strong>
+                <span>Every dated default cost</span>
+              </div>
             </div>
-            <CalendarDays size={18} />
+            <div className="history-controls">
+              <label className="history-search">
+                <Search size={15} />
+                <input value={scheduleSearch} onChange={(event) => setScheduleSearch(event.target.value)} placeholder="Search by name..." aria-label="Search cost schedules by name" />
+              </label>
+              <label className="history-date-filter">
+                <CalendarDays size={15} />
+                <select value={scheduleDateFilter} onChange={(event) => setScheduleDateFilter(event.target.value)} aria-label="Filter cost schedules by date">
+                  <option value="all">All dates</option>
+                  <option value="30days">Last 30 days</option>
+                  <option value="year">This year</option>
+                </select>
+              </label>
+            </div>
           </div>
 
           {schedules.length > 0 ? (
             <div className="table-wrapper">
               <table className="transaction-table default-cost-table">
                 <thead>
-                  <tr><th>Start Date</th><th>Name</th><th>Cost</th><th>Status</th><th /></tr>
+                  <tr>
+                    <th><button type="button" className="cost-sort-button" onClick={() => toggleScheduleSort("date")}>Start date <span>{scheduleSort.key === "date" ? (scheduleSort.direction === "asc" ? "↑" : "↓") : "↕"}</span></button></th>
+                    <th><button type="button" className="cost-sort-button" onClick={() => toggleScheduleSort("name")}>Name <span>{scheduleSort.key === "name" ? (scheduleSort.direction === "asc" ? "↑" : "↓") : "↕"}</span></button></th>
+                    <th><button type="button" className="cost-sort-button" onClick={() => toggleScheduleSort("amount")}>Cost ({currency}) <span>{scheduleSort.key === "amount" ? (scheduleSort.direction === "asc" ? "↑" : "↓") : "↕"}</span></button></th>
+                    <th>Status</th><th>Actions</th>
+                  </tr>
                 </thead>
                 <tbody>
-                  {schedules.map((schedule) => {
+                  {visibleSchedules.map((schedule) => {
                     const scheduleStatusValue = getScheduleStatus(schedule.startDate);
                     return (
                       <tr key={schedule.id}>
@@ -652,12 +733,25 @@ const Settings = ({ user, onSave }: Props) => {
                   })}
                 </tbody>
               </table>
+              {visibleSchedules.length === 0 && <div className="cost-filter-empty">No cost schedules match these filters.</div>}
+              <div className="cost-table-footer">Showing {visibleSchedules.length} of {schedules.length} {schedules.length === 1 ? "record" : "records"}</div>
             </div>
           ) : (
             <div className="empty-schedule">No dated costs yet. Create your first schedule above.</div>
           )}
         </div>
       </section>
+
+      <div className="settings-save-bar">
+        {status && (
+          <div className={status.includes("success") ? "field-hint" : "error-message"} role="status">
+            {status}
+          </div>
+        )}
+        <button className="primary-button" onClick={handleSave}>
+          <Save size={16} /> Save all settings
+        </button>
+      </div>
 
     </div>
   );

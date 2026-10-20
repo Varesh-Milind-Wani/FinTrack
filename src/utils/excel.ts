@@ -1,14 +1,16 @@
 import * as XLSX from "xlsx";
 import type { DefaultCostSchedule, Expense, Investment, Transaction, UserAccount, Withdrawal } from "../types/finance";
+import { getAuthoritativeBalance } from "./balance";
 
 export interface FinanceImport {
+  profile?: Pick<UserAccount, "name" | "email" | "createdAt">;
   transactions: Transaction[];
   investments: Investment[];
   expenses: Expense[];
   withdrawals: Withdrawal[];
   defaultCostSchedules: DefaultCostSchedule[];
   lockedMonths: string[];
-  settings?: Pick<UserAccount, "startingBalance" | "startingBalanceLocked" | "currency" | "defaultCostAmount" | "expenseIncludedByDefault" | "currentBalance" | "balanceAdjustment" | "investmentIncluded" | "expenseTrackingEnabled" | "costLocked">;
+  settings?: Pick<UserAccount, "startingBalance" | "startingBalanceLocked" | "startingBalancePasswordHash" | "startingBalancePasswordSalt" | "currency" | "defaultCostAmount" | "expenseIncludedByDefault" | "currentBalance" | "balanceAdjustment" | "investmentIncluded" | "expenseTrackingEnabled" | "costLocked">;
 }
 
 type ExcelRow = Record<string, unknown>;
@@ -130,8 +132,7 @@ export const exportFinanceToExcel = (user: UserAccount) => {
     .filter((transaction) => transaction.type === "loss")
     .reduce((sum, transaction) => sum + transaction.amount, 0);
 
-  const currentBalance =
-    user.startingBalance + totalProfit - totalLoss;
+  const currentBalance = getAuthoritativeBalance(user);
 
   const netPerformance = totalProfit - totalLoss;
 
@@ -179,6 +180,7 @@ export const exportFinanceToExcel = (user: UserAccount) => {
   // A versioned backup sheet preserves every finance field exactly. The other
   // sheets remain easy to read and edit in Excel.
   const backup: FinanceImport = {
+    profile: { name: user.name, email: user.email, createdAt: user.createdAt },
     transactions: user.transactions,
     investments: user.investments ?? [],
     expenses: user.expenses ?? [],
@@ -188,6 +190,8 @@ export const exportFinanceToExcel = (user: UserAccount) => {
     settings: {
       startingBalance: user.startingBalance,
       startingBalanceLocked: user.startingBalanceLocked,
+      startingBalancePasswordHash: user.startingBalancePasswordHash,
+      startingBalancePasswordSalt: user.startingBalancePasswordSalt,
       currency: user.currency,
       defaultCostAmount: user.defaultCostAmount,
       expenseIncludedByDefault: user.expenseIncludedByDefault,
@@ -218,17 +222,33 @@ export const exportFinanceToExcel = (user: UserAccount) => {
     XLSX.utils.json_to_sheet(transactionData);
   const investmentSheet = XLSX.utils.json_to_sheet((user.investments ?? []).map((item) => ({
     "Investment ID": item.id, "Recorded At (ISO)": item.date, Name: item.name, Type: item.type,
+    Quantity: item.quantity ?? 1, "Closed Position": item.isClosed ?? false,
     "Amount Invested": item.amount, "Current Value": item.currentValue, "Entry Price": item.entryPrice ?? "", "Exit Price": item.exitPrice ?? "", Note: item.note,
   })));
   const expenseSheet = XLSX.utils.json_to_sheet((user.expenses ?? []).map((item) => ({
     "Expense ID": item.id, "Recorded At (ISO)": item.date, Name: item.name, Category: item.category, Amount: item.amount, Note: item.note,
   })));
   const withdrawalSheet = XLSX.utils.json_to_sheet((user.withdrawals ?? []).map((item) => ({
-    "Withdrawal ID": item.id, "Recorded At (ISO)": item.date, Amount: item.amount, Method: item.method, Status: item.status, Note: item.note,
+    "Withdrawal ID": item.id, "Recorded At (ISO)": item.date, Amount: item.amount, Method: item.method, "Source Investment ID": item.sourceInvestmentId ?? "", Status: item.status, Note: item.note,
   })));
   const scheduleSheet = XLSX.utils.json_to_sheet((user.defaultCostSchedules ?? []).map((item) => ({
     "Schedule ID": item.id, "Start Date": item.startDate, Name: item.name, Amount: item.amount,
   })));
+  const settingsSheet = XLSX.utils.aoa_to_sheet([
+    ["Setting", "Value"],
+    ["Starting Balance", user.startingBalance],
+    ["Starting Balance Locked", user.startingBalanceLocked ?? false],
+    ["Starting Balance PIN Hash", user.startingBalancePasswordHash ?? ""],
+    ["Starting Balance PIN Salt", user.startingBalancePasswordSalt ?? ""],
+    ["Currency", user.currency],
+    ["Default Cost Amount", user.defaultCostAmount],
+    ["Expense Included By Default", user.expenseIncludedByDefault],
+    ["Expense Tracking Enabled", user.expenseTrackingEnabled ?? false],
+    ["Investment Included", user.investmentIncluded ?? false],
+    ["Cost Locked", user.costLocked ?? false],
+    ["Balance Adjustment", user.balanceAdjustment ?? 0],
+    ["Locked Months (JSON)", JSON.stringify(user.lockedMonths ?? [])],
+  ]);
 
   summarySheet["!cols"] = [
     { wch: 25 },
@@ -263,6 +283,7 @@ export const exportFinanceToExcel = (user: UserAccount) => {
   XLSX.utils.book_append_sheet(workbook, expenseSheet, "Expenses");
   XLSX.utils.book_append_sheet(workbook, withdrawalSheet, "Withdrawals");
   XLSX.utils.book_append_sheet(workbook, scheduleSheet, "Cost Schedules");
+  XLSX.utils.book_append_sheet(workbook, settingsSheet, "Settings");
 
   XLSX.utils.book_append_sheet(
     workbook,
@@ -305,6 +326,7 @@ export const importFinanceFromExcel = (file: File): Promise<FinanceImport> => {
             const backup = JSON.parse(backupJson) as FinanceImport;
             if (Array.isArray(backup.transactions)) {
               resolve({
+                profile: backup.profile,
                 transactions: backup.transactions,
                 investments: Array.isArray(backup.investments) ? backup.investments : [],
                 expenses: Array.isArray(backup.expenses) ? backup.expenses : [],
@@ -318,20 +340,25 @@ export const importFinanceFromExcel = (file: File): Promise<FinanceImport> => {
           }
         }
 
-        const transactionSheet = workbook.Sheets["Transactions"];
+        const parseRows = (sheetName: string): ExcelRow[] => {
+          const sheet = workbook.Sheets[sheetName];
+          return sheet ? XLSX.utils.sheet_to_json<ExcelRow>(sheet, { defval: "", raw: true }) : [];
+        };
+        const idFor = (row: ExcelRow, column: string) => String(getCellValue(row, column) || crypto.randomUUID());
+        const parseIsoDate = (value: unknown): string | null => {
+          const date = parseTransactionDate(value, undefined);
+          return date ? date.toISOString() : null;
+        };
 
-        if (!transactionSheet) {
-          reject(new Error("Transactions sheet not found in Excel file"));
+        const transactionRows = parseRows("Transactions");
+        if (!workbook.Sheets["Transactions"] && !workbook.Sheets["Investments"] && !workbook.Sheets["Expenses"] && !workbook.Sheets["Withdrawals"]) {
+          reject(new Error("No FinTrack data sheets were found in this Excel file"));
           return;
         }
 
-        const rows = XLSX.utils.sheet_to_json<ExcelRow>(transactionSheet, {
-          defval: "",
-          raw: true,
-        });
         const transactions: Transaction[] = [];
 
-        rows.forEach((row) => {
+        transactionRows.forEach((row) => {
           try {
             const stableTimestamp = getCellValue(row, "Recorded At (ISO)");
             const dateValue = stableTimestamp || getCellValue(row, "Date");
@@ -357,7 +384,7 @@ export const importFinanceFromExcel = (file: File): Promise<FinanceImport> => {
             const noteValue = String(getCellValue(row, "Note") ?? "");
 
             const transaction: Transaction = {
-              id: String(getCellValue(row, "Transaction ID") || crypto.randomUUID()),
+              id: idFor(row, "Transaction ID"),
               date: date.toISOString(),
               type,
               // Amount is stored as a positive value for both profit and loss.
@@ -379,8 +406,62 @@ export const importFinanceFromExcel = (file: File): Promise<FinanceImport> => {
           }
         });
 
-        // Legacy transaction-only exports remain supported.
-        resolve({ transactions, investments: [], expenses: [], withdrawals: [], defaultCostSchedules: [], lockedMonths: [] });
+        const investments: Investment[] = parseRows("Investments").flatMap((row) => {
+          const date = parseIsoDate(getCellValue(row, "Recorded At (ISO)") || getCellValue(row, "Date"));
+          const name = String(getCellValue(row, "Name") ?? "").trim();
+          if (!date || !name) return [];
+          const quantity = Math.max(0, toNumber(getCellValue(row, "Quantity")) || 1);
+          const entryPrice = toNumber(getCellValue(row, "Entry Price")) || undefined;
+          const amount = toNumber(getCellValue(row, "Amount Invested"));
+          return [{
+            id: idFor(row, "Investment ID"), date, name,
+            type: String(getCellValue(row, "Type") || "other") as Investment["type"],
+            quantity, isClosed: toBoolean(getCellValue(row, "Closed Position")) ?? false,
+            amount: amount || (entryPrice ? entryPrice * quantity : 0),
+            currentValue: toNumber(getCellValue(row, "Current Value")), entryPrice,
+            exitPrice: toNumber(getCellValue(row, "Exit Price")) || undefined,
+            note: String(getCellValue(row, "Note") ?? ""),
+          }];
+        });
+        const expenses: Expense[] = parseRows("Expenses").flatMap((row) => {
+          const date = parseIsoDate(getCellValue(row, "Recorded At (ISO)") || getCellValue(row, "Date"));
+          const name = String(getCellValue(row, "Name") ?? "").trim();
+          if (!date || !name) return [];
+          return [{ id: idFor(row, "Expense ID"), date, name, category: String(getCellValue(row, "Category") || "Other"), amount: toNumber(getCellValue(row, "Amount")), note: String(getCellValue(row, "Note") ?? "") }];
+        });
+        const withdrawals: Withdrawal[] = parseRows("Withdrawals").flatMap((row) => {
+          const date = parseIsoDate(getCellValue(row, "Recorded At (ISO)") || getCellValue(row, "Date"));
+          if (!date) return [];
+          const method = String(getCellValue(row, "Method") || "other") as Withdrawal["method"];
+          const status = String(getCellValue(row, "Status") || "completed") as Withdrawal["status"];
+          return [{ id: idFor(row, "Withdrawal ID"), date, amount: toNumber(getCellValue(row, "Amount")), method, sourceInvestmentId: String(getCellValue(row, "Source Investment ID") || "") || undefined, status, note: String(getCellValue(row, "Note") ?? "") }];
+        });
+        const defaultCostSchedules: DefaultCostSchedule[] = parseRows("Cost Schedules").flatMap((row) => {
+          const startDate = parseIsoDate(getCellValue(row, "Start Date"));
+          const name = String(getCellValue(row, "Name") ?? "").trim();
+          if (!startDate || !name) return [];
+          return [{ id: idFor(row, "Schedule ID"), startDate, name, amount: toNumber(getCellValue(row, "Amount")) }];
+        });
+        const settingsRows = parseRows("Settings");
+        const setting = (name: string) => settingsRows.find((row) => String(getCellValue(row, "Setting") ?? "").trim().toLowerCase() === name.toLowerCase())?.Value;
+        const lockedMonthsValue = setting("Locked Months (JSON)");
+        let lockedMonths: string[] = [];
+        try { if (typeof lockedMonthsValue === "string") lockedMonths = JSON.parse(lockedMonthsValue); } catch { /* Ignore malformed optional settings. */ }
+        const settings: FinanceImport["settings"] = setting("Starting Balance") !== undefined ? {
+          startingBalance: toNumber(setting("Starting Balance")),
+          startingBalanceLocked: toBoolean(setting("Starting Balance Locked")),
+          startingBalancePasswordHash: String(setting("Starting Balance PIN Hash") || ""),
+          startingBalancePasswordSalt: String(setting("Starting Balance PIN Salt") || ""),
+          currency: String(setting("Currency") || "INR"),
+          defaultCostAmount: toNumber(setting("Default Cost Amount")),
+          expenseIncludedByDefault: toBoolean(setting("Expense Included By Default")) ?? false,
+          expenseTrackingEnabled: toBoolean(setting("Expense Tracking Enabled")),
+          investmentIncluded: toBoolean(setting("Investment Included")),
+          costLocked: toBoolean(setting("Cost Locked")),
+          balanceAdjustment: toNumber(setting("Balance Adjustment")),
+        } : undefined;
+
+        resolve({ transactions, investments, expenses, withdrawals, defaultCostSchedules, lockedMonths, settings });
       } catch (error) {
         reject(error);
       }

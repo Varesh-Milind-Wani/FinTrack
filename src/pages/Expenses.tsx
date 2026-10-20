@@ -51,10 +51,10 @@ const Expenses = ({ user, onSave }: Props) => {
     if (window.confirm("Delete this expense?")) onSave({ ...user, expenses: expenses.filter((expense) => expense.id !== id) });
   };
 
-  return <div className="page-container">
-    <div className="page-header">
-      <div><h1 className="page-title">Expense Tracker</h1><p className="page-subtitle">Keep personal spending separate from trades and investments.</p></div>
-      <button className="btn-primary" onClick={openAdd}><Plus size={16} /> Add expense</button>
+  return <div className="page-content expenses-page">
+    <div className="page-heading expense-page-heading">
+      <div><span className="eyebrow">PERSONAL FINANCE</span><h1>Expense tracker</h1><p>Keep personal spending separate from trades and investments.</p></div>
+      <button className="primary-button" onClick={openAdd}><Plus size={16} /> Add expense</button>
     </div>
     <div className="stats-grid-three" style={{ marginBottom: 24 }}>
       <div className="stat-card"><div className="stat-card-top"><div className="stat-icon loss"><ReceiptText size={19} /></div><span>Total expenses</span></div><div className="stat-value negative">{fmt(total)}</div><div className="stat-trend neutral">All recorded spending</div></div>

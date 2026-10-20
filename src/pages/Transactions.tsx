@@ -62,7 +62,7 @@ const Transactions = ({
   };
 
   return (
-    <div className="page-content">
+    <div className="page-content transactions-page">
       <div className="page-heading">
         <div>
           <span className="eyebrow">

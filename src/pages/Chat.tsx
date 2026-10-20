@@ -181,7 +181,12 @@ Supported formats: profit/loss/gain/made/won/lost + amount`;
     if (!pendingTransaction || !user) return;
 
     const now = new Date();
-    const costAmount = costIncluded ? user.defaultCostAmount : 0;
+    const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const scheduledCost = [...(user.defaultCostSchedules ?? [])]
+      .filter((schedule) => schedule.startDate <= todayKey)
+      .sort((left, right) => right.startDate.localeCompare(left.startDate))[0]?.amount
+      ?? user.defaultCostAmount;
+    const costAmount = costIncluded ? scheduledCost : 0;
     const netAmount = pendingTransaction.type === "profit"
       ? Math.max(0, pendingTransaction.amount - costAmount)
       : pendingTransaction.amount + costAmount;

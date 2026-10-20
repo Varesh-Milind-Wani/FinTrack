@@ -8,6 +8,10 @@ export interface Investment {
   type: InvestmentType;
   amount: number;          // Amount invested
   currentValue: number;    // Current market value
+  /** Number of units held (defaults to 1 for existing records). */
+  quantity?: number;
+  /** True after the position has been exited. */
+  isClosed?: boolean;
   /** Per-unit purchase price, when applicable. */
   entryPrice?: number;
   /** Per-unit sale price, when the holding has been exited. */
@@ -20,7 +24,9 @@ export interface Withdrawal {
   id: string;
   date: string;
   amount: number;
-  method: "bank" | "crypto" | "cash" | "other";
+  method: "bank" | "crypto" | "cash" | "other" | "investment";
+  /** Links sale proceeds to the exited portfolio holding. */
+  sourceInvestmentId?: string;
   note: string;
   status: "pending" | "completed" | "cancelled";
 }
@@ -70,6 +76,8 @@ export interface UserAccount {
   password: string;
   startingBalance: number;
   startingBalanceLocked?: boolean;
+  startingBalancePasswordHash?: string;
+  startingBalancePasswordSalt?: string;
   currency: string;
   defaultCostAmount: number;
   defaultCostSchedules: DefaultCostSchedule[];

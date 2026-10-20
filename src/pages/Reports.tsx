@@ -1,8 +1,9 @@
-import { BarChart3, CalendarDays, Lock, ShieldCheck, TrendingDown, TrendingUp, Unlock } from "lucide-react";
-import { useMemo } from "react";
+import { BarChart3, CalendarDays, Lock, ShieldCheck, TrendingDown, TrendingUp, Unlock, X } from "lucide-react";
+import { useMemo, useState } from "react";
 import type { UserAccount } from "../types/finance";
 import { formatCurrency } from "../utils/money";
 import { getMonthKey, getMonthLabel } from "../utils/monthLocks";
+import { verifyBalancePin } from "../utils/balancePin";
 
 interface Props {
   user: UserAccount;
@@ -17,6 +18,10 @@ type MonthlyReport = {
 };
 
 const Reports = ({ user, onToggleMonthLock }: Props) => {
+  const [unlockMonthKey, setUnlockMonthKey] = useState<string | null>(null);
+  const [unlockPin, setUnlockPin] = useState("");
+  const [unlockError, setUnlockError] = useState<string | null>(null);
+  const [pinNotice, setPinNotice] = useState<string | null>(null);
   const reports = useMemo(() => {
     const byMonth = new Map<string, MonthlyReport>();
 
@@ -47,6 +52,41 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
     { profit: 0, loss: 0, transactions: 0 },
   ), [reports]);
 
+  const handleMonthLockClick = (monthKey: string, locked: boolean) => {
+    setPinNotice(null);
+    if (!locked) {
+      onToggleMonthLock(monthKey);
+      return;
+    }
+    if (!user.startingBalancePasswordHash || !user.startingBalancePasswordSalt) {
+      setPinNotice("Set a starting balance PIN in Settings before unlocking a month.");
+      return;
+    }
+    setUnlockMonthKey(monthKey);
+    setUnlockPin("");
+    setUnlockError(null);
+  };
+
+  const handleUnlockMonth = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!/^\d{4}$/.test(unlockPin)) {
+      setUnlockError("Enter your 4-digit PIN.");
+      return;
+    }
+    try {
+      if (!(await verifyBalancePin(unlockPin, user))) {
+        setUnlockError("Incorrect PIN. Please try again.");
+        return;
+      }
+      if (unlockMonthKey) onToggleMonthLock(unlockMonthKey);
+      setUnlockMonthKey(null);
+      setUnlockPin("");
+      setUnlockError(null);
+    } catch {
+      setUnlockError("PIN verification is unavailable in this browser.");
+    }
+  };
+
   return (
     <div className="page-content reports-page">
       <div className="page-heading reports-heading">
@@ -68,6 +108,7 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
         <Lock size={18} />
         <span>Locked months cannot have transactions added, edited, deleted, or imported until unlocked.</span>
       </div>
+      {pinNotice && <div className="error-message reports-pin-notice" role="alert">{pinNotice}</div>}
 
       <div className="reports-table-card">
         <div className="reports-table-title"><div><h3>Monthly ledger</h3><p>Lock a completed month to prevent any changes to its transaction records.</p></div><ShieldCheck size={20} /></div>
@@ -103,7 +144,7 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
                   <td>
                     <button
                       className={locked ? "secondary-button report-lock-button" : "primary-button report-lock-button"}
-                      onClick={() => onToggleMonthLock(report.monthKey)}
+                      onClick={() => handleMonthLockClick(report.monthKey, locked)}
                     >
                       {locked ? <><Unlock size={15} /> Unlock month</> : <><Lock size={15} /> Lock month</>}
                     </button>
@@ -117,6 +158,31 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
           </tbody>
         </table>
       </div>
+      {unlockMonthKey && (
+        <div className="modal-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setUnlockMonthKey(null); }}>
+          <form className="transaction-modal month-unlock-modal" role="dialog" aria-modal="true" aria-labelledby="month-unlock-title" onSubmit={(event) => void handleUnlockMonth(event)}>
+            <div className="modal-header">
+              <div>
+                <span className="eyebrow">PIN REQUIRED</span>
+                <h2 id="month-unlock-title">Unlock {getMonthLabel(unlockMonthKey)}?</h2>
+                <p>Enter your starting balance PIN to reopen this month.</p>
+              </div>
+              <button type="button" className="close-button" aria-label="Close dialog" onClick={() => setUnlockMonthKey(null)}><X size={18} /></button>
+            </div>
+            <div className="modal-body">
+              <label className="month-unlock-pin-label">
+                4-digit PIN
+                <input autoFocus type="password" inputMode="numeric" pattern="[0-9]*" maxLength={4} autoComplete="current-password" value={unlockPin} onChange={(event) => { setUnlockPin(event.target.value.replace(/\D/g, "").slice(0, 4)); setUnlockError(null); }} placeholder="Enter your PIN" />
+              </label>
+              {unlockError && <div className="error-message" role="alert">{unlockError}</div>}
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="secondary-button" onClick={() => setUnlockMonthKey(null)}>Cancel</button>
+              <button type="submit" className="primary-button"><Unlock size={15} /> Unlock month</button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 };

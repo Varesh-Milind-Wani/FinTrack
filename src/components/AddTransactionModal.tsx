@@ -105,11 +105,9 @@ const AddTransactionModal = ({
     initialTransaction?.confidenceLevel ?? 50
   );
 
-  const scheduledCost = getScheduledCost(
-    dateTime,
-    defaultCostSchedules,
-    defaultCostAmount
-  );
+  const scheduledCost = isEditing
+    ? initialTransaction?.costAmount ?? 0
+    : getScheduledCost(dateTime, defaultCostSchedules, defaultCostAmount);
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -117,9 +115,13 @@ const AddTransactionModal = ({
     const selectedDate = new Date(dateTime);
     if (!activeAmount || Number.isNaN(selectedDate.getTime())) return;
 
-    const appliedCost = expenseIncluded
-      ? getScheduledCost(dateTime, defaultCostSchedules, defaultCostAmount)
-      : 0;
+    // A saved transaction keeps the cost it was created with. Cost schedule
+    // updates only affect new transactions.
+    const appliedCost = isEditing
+      ? initialTransaction?.costAmount ?? 0
+      : expenseIncluded
+        ? getScheduledCost(dateTime, defaultCostSchedules, defaultCostAmount)
+        : 0;
 
     const netAmount = currentType === "profit"
       ? Math.max(0, activeAmount - appliedCost)
@@ -180,12 +182,15 @@ const AddTransactionModal = ({
             <input
               type="checkbox"
               checked={expenseIncluded}
+              disabled={isEditing}
               onChange={(event) => setExpenseIncluded(event.target.checked)}
             />
             <div className="checkbox-content">
               <span className="checkbox-title">Expense included</span>
               <span className="checkbox-subtitle">
-                {currentType === "profit"
+                {isEditing
+                  ? `Cost saved with this transaction: ${formatCurrency(scheduledCost, currency)}. Cost schedule updates will not change it.`
+                  : currentType === "profit"
                   ? expenseIncluded && scheduledCost > 0
                     ? `Cost/brokerage (-${formatCurrency(scheduledCost, currency)}) is deducted from gross profit.`
                     : "Include default charges/expenses in profit calculation."

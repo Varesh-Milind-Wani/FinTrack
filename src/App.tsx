@@ -1,4 +1,4 @@
-import { Menu, X } from "lucide-react";
+import { ArrowUp, CircleDollarSign, Menu, ShieldCheck, X } from "lucide-react";
 import { useState, useEffect } from "react";
 
 import Sidebar from "./components/Sidebar";
@@ -15,6 +15,7 @@ import Chat from "./pages/Chat";
 import InvestmentPage from "./pages/Investment";
 import Expenses from "./pages/Expenses";
 import Reports from "./pages/Reports";
+import Profile from "./pages/Profile";
 
 import {
   addStorageChangeListener,
@@ -35,16 +36,52 @@ const mergeById = <T extends { id: string }>(existing: T[], imported: T[]): T[] 
   return [...imported, ...existing.filter((item) => !importedIds.has(item.id))];
 };
 
+type AppPage =
+  | "dashboard"
+  | "transactions"
+  | "analytics"
+  | "profitloss"
+  | "reports"
+  | "withdrawals"
+  | "settings"
+  | "chat"
+  | "investment"
+  | "expenses"
+  | "profile";
+
+const APP_PAGES: AppPage[] = [
+  "dashboard",
+  "transactions",
+  "analytics",
+  "profitloss",
+  "reports",
+  "withdrawals",
+  "settings",
+  "chat",
+  "investment",
+  "expenses",
+  "profile",
+];
+
+const getSavedPage = (userId: string): AppPage => {
+  try {
+    const savedPage = localStorage.getItem(`fintrack_active_page_${userId}`);
+    return APP_PAGES.includes(savedPage as AppPage) ? (savedPage as AppPage) : "dashboard";
+  } catch {
+    return "dashboard";
+  }
+};
+
 const App = () => {
   const [user, setUser] =
     useState<UserAccount | null>(
       () => getCurrentUser()
     );
 
-  const [activePage, setActivePage] =
-    useState<
-      "dashboard" | "transactions" | "analytics" | "profitloss" | "reports" | "withdrawals" | "settings" | "chat" | "investment" | "expenses"
-    >("dashboard");
+  const [activePage, setActivePage] = useState<AppPage>(() => {
+    const currentUser = getCurrentUser();
+    return currentUser ? getSavedPage(currentUser.id) : "dashboard";
+  });
 
   const [modalOpen, setModalOpen] =
     useState(false);
@@ -53,6 +90,7 @@ const App = () => {
 
   const [mobileMenuOpen, setMobileMenuOpen] =
     useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   useEffect(() => {
     const handleStorage = () => {
@@ -69,6 +107,41 @@ const App = () => {
       removeStorageListener();
     };
   }, []);
+
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+
+    const previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const handleOutsideInteraction = (event: MouseEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest(".sidebar, .mobile-menu-button")) {
+        return;
+      }
+      setMobileMenuOpen(false);
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMobileMenuOpen(false);
+    };
+
+    document.addEventListener("click", handleOutsideInteraction);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.removeEventListener("click", handleOutsideInteraction);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [mobileMenuOpen]);
+
+  useEffect(() => {
+    if (!user) return;
+    try {
+      localStorage.setItem(`fintrack_active_page_${user.id}`, activePage);
+    } catch {
+      // Navigation still works when browser storage is unavailable.
+    }
+  }, [activePage, user?.id]);
 
   if (!user) {
     return (
@@ -177,32 +250,39 @@ const App = () => {
   };
 
   const handlePageChange = (
-    page:
-      | "dashboard"
-      | "transactions"
-      | "analytics"
-      | "profitloss"
-      | "reports"
-      | "withdrawals"
-      | "settings"
-      | "chat"
-      | "investment"
-      | "expenses"
+    page: AppPage
   ) => {
     setActivePage(page);
+    try {
+      localStorage.setItem(`fintrack_active_page_${user.id}`, page);
+    } catch {
+      // Navigation still works when browser storage is unavailable.
+    }
     setMobileMenuOpen(false);
   };
 
   return (
-    <div className="app-layout">
+    <div className={`app-layout ${sidebarCollapsed ? "sidebar-is-collapsed" : ""}`}>
       <Sidebar
         user={user}
         activePage={activePage}
         onPageChange={handlePageChange}
         onLogout={handleLogout}
         mobileOpen={mobileMenuOpen}
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed((collapsed) => !collapsed)}
       />
 
+      {mobileMenuOpen && (
+        <button
+          type="button"
+          className="mobile-nav-backdrop"
+          onClick={() => setMobileMenuOpen(false)}
+          aria-label="Close navigation"
+        />
+      )}
+
+      <div className="app-content-shell">
       <main className="main-area">
         <button
           type="button"
@@ -220,6 +300,14 @@ const App = () => {
             onAdd={() =>
               setModalOpen(true)
             }
+          />
+        ) : activePage === "profile" ? (
+          <Profile
+            user={user}
+            onSave={(updatedUser) => {
+              updateUser(updatedUser);
+              setUser(updatedUser);
+            }}
           />
         ) : activePage === "transactions" ? (
           <Transactions
@@ -245,6 +333,7 @@ const App = () => {
               const importedIds = new Set(unlockedTransactions.map((transaction) => transaction.id));
               const transactionsUpdatedUser: UserAccount = {
                 ...user,
+                ...(backup.profile ?? {}),
                 // Exported IDs are stable. Replace matching open records instead
                 // of creating duplicate rows when a backup is imported twice.
                 transactions: [
@@ -323,7 +412,36 @@ const App = () => {
             }}
           />
         )}
+
       </main>
+
+      </div>
+
+        <footer className="app-footer">
+          <div className="app-footer-main">
+            <div className="app-footer-branding">
+              <span className="app-footer-mark"><CircleDollarSign size={21} /></span>
+              <div>
+                <strong>FinTrack</strong>
+                <span>Trade, investment, and expense tracking in one place.</span>
+              </div>
+            </div>
+            <div className="app-footer-privacy">
+              <ShieldCheck size={17} />
+              <div><strong>Your data stays on this device</strong><span>Saved locally in your browser.</span></div>
+            </div>
+          </div>
+          <div className="app-footer-bottom">
+            <span className="app-footer-copy">&copy; {new Date().getFullYear()} FinTrack. All rights reserved.</span>
+            <button
+              type="button"
+              className="app-footer-top"
+              onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+            >
+              <ArrowUp size={14} /> Back to top
+            </button>
+          </div>
+        </footer>
 
       {modalOpen && (
         <AddTransactionModal

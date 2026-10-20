@@ -1,5 +1,7 @@
 import {
   BarChart3,
+  ChevronLeft,
+  ChevronRight,
   CircleDollarSign,
   CreditCard,
   LayoutDashboard,
@@ -15,12 +17,14 @@ import type { UserAccount } from "../types/finance";
 
 interface SidebarProps {
   user: UserAccount;
-  activePage: "dashboard" | "transactions" | "analytics" | "profitloss" | "reports" | "withdrawals" | "settings" | "chat" | "investment" | "expenses";
+  activePage: "dashboard" | "transactions" | "analytics" | "profitloss" | "reports" | "withdrawals" | "settings" | "chat" | "investment" | "expenses" | "profile";
   onPageChange: (
-    page: "dashboard" | "transactions" | "analytics" | "profitloss" | "reports" | "withdrawals" | "settings" | "chat" | "investment" | "expenses"
+    page: "dashboard" | "transactions" | "analytics" | "profitloss" | "reports" | "withdrawals" | "settings" | "chat" | "investment" | "expenses" | "profile"
   ) => void;
   onLogout: () => void;
   mobileOpen: boolean;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
 }
 
 const Sidebar = ({
@@ -29,12 +33,12 @@ const Sidebar = ({
   onPageChange,
   onLogout,
   mobileOpen,
+  collapsed,
+  onToggleCollapse,
 }: SidebarProps) => {
   return (
     <aside
-      className={`sidebar ${
-        mobileOpen ? "sidebar-open" : ""
-      }`}
+      className={`sidebar ${mobileOpen ? "sidebar-open" : ""} ${collapsed ? "sidebar-collapsed" : ""}`}
     >
       <div className="brand">
         <div className="brand-logo">
@@ -42,10 +46,16 @@ const Sidebar = ({
         </div>
 
         <span>FinTrack</span>
-      </div>
-
-      <div className="sidebar-section-title">
-        PERSONAL FINANCE
+        <button
+          type="button"
+          className="sidebar-collapse-button"
+          onClick={onToggleCollapse}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-expanded={!collapsed}
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          {collapsed ? <ChevronRight size={17} /> : <ChevronLeft size={17} />}
+        </button>
       </div>
 
       <nav className="sidebar-nav">
@@ -56,9 +66,11 @@ const Sidebar = ({
               : "nav-button"
           }
           onClick={() => onPageChange("dashboard")}
+          aria-label="Dashboard"
+          title={collapsed ? "Dashboard" : undefined}
         >
           <LayoutDashboard size={18} />
-          Dashboard
+          <span className="nav-label">Dashboard</span>
         </button>
 
         <button
@@ -68,9 +80,11 @@ const Sidebar = ({
               : "nav-button"
           }
           onClick={() => onPageChange("transactions")}
+          aria-label="Transactions"
+          title={collapsed ? "Transactions" : undefined}
         >
           <CreditCard size={18} />
-          Transactions
+          <span className="nav-label">Transactions</span>
         </button>
 
         <button
@@ -80,9 +94,11 @@ const Sidebar = ({
               : "nav-button"
           }
           onClick={() => onPageChange("analytics")}
+          aria-label="Analytics"
+          title={collapsed ? "Analytics" : undefined}
         >
           <BarChart3 size={18} />
-          Analytics
+          <span className="nav-label">Analytics</span>
         </button>
 
         <button
@@ -92,9 +108,11 @@ const Sidebar = ({
               : "nav-button"
           }
           onClick={() => onPageChange("profitloss")}
+          aria-label="Profit and Loss"
+          title={collapsed ? "P&L" : undefined}
         >
           <TrendingUp size={18} />
-          P&L
+          <span className="nav-label">P&amp;L</span>
         </button>
 
         <button
@@ -104,9 +122,11 @@ const Sidebar = ({
               : "nav-button"
           }
           onClick={() => onPageChange("withdrawals")}
+          aria-label="Withdrawals"
+          title={collapsed ? "Withdrawals" : undefined}
         >
           <TrendingDown size={18} />
-          Withdrawals
+          <span className="nav-label">Withdrawals</span>
         </button>
 
         <button
@@ -116,9 +136,11 @@ const Sidebar = ({
               : "nav-button"
           }
           onClick={() => onPageChange("reports")}
+          aria-label="Reports"
+          title={collapsed ? "Reports" : undefined}
         >
           <FileBarChart size={18} />
-          Reports
+          <span className="nav-label">Reports</span>
         </button>
 
         <button
@@ -128,9 +150,11 @@ const Sidebar = ({
               : "nav-button"
           }
           onClick={() => onPageChange("investment")}
+          aria-label="Investment"
+          title={collapsed ? "Investment" : undefined}
         >
           <PiggyBank size={18} />
-          Investment
+          <span className="nav-label">Investment</span>
         </button>
 
         <button
@@ -140,9 +164,11 @@ const Sidebar = ({
               : "nav-button"
           }
           onClick={() => onPageChange("settings")}
+          aria-label="Settings"
+          title={collapsed ? "Settings" : undefined}
         >
           <Settings size={18} />
-          Settings
+          <span className="nav-label">Settings</span>
         </button>
 
         <button
@@ -152,14 +178,23 @@ const Sidebar = ({
               : "nav-button"
           }
           onClick={() => onPageChange("chat")}
+          aria-label="Chat Assistant"
+          title={collapsed ? "Chat Assistant" : undefined}
         >
           <MessageCircle size={18} />
-          Chat Assistant
+          <span className="nav-label">Chat Assistant</span>
         </button>
       </nav>
 
       <div className="sidebar-bottom">
-        <div className="profile-card">
+        <button
+          type="button"
+          className={`profile-card ${activePage === "profile" ? "active" : ""}`}
+          onClick={() => onPageChange("profile")}
+          aria-label={`Open profile for ${user.name}`}
+          aria-current={activePage === "profile" ? "page" : undefined}
+          title={collapsed ? `Profile: ${user.name}` : undefined}
+        >
           <div className="profile-avatar">
             {user.name.charAt(0).toUpperCase()}
           </div>
@@ -168,16 +203,19 @@ const Sidebar = ({
             <strong>{user.name}</strong>
             <span>{user.email}</span>
           </div>
-        </div>
+        </button>
 
         <button
           className="logout-button"
           onClick={onLogout}
+          aria-label="Logout"
+          title={collapsed ? "Logout" : undefined}
         >
           <LogOut size={16} />
-          Logout
+          <span className="nav-label">Logout</span>
         </button>
       </div>
+
     </aside>
   );
 };

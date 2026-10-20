@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ChartCandlestick, LineChart, X } from "lucide-react";
 import Highcharts from "highcharts";
 import HighchartsStock from "highcharts/highstock";
@@ -41,24 +42,14 @@ const ChartFullscreenModal = ({
   echartsOption,
   onClose,
 }: Props) => {
-  const chartBodyRef = useRef<HTMLDivElement>(null);
-  const [chartHeight, setChartHeight] = useState(420);
+  const restorePageRef = useRef<(() => void) | null>(null);
   const [chartMode, setChartMode] =
     useState<ChartMode>(defaultChartMode);
-
-  useEffect(() => {
-    if (!open || !chartBodyRef.current) return;
-
-    const body = chartBodyRef.current;
-    const updateChartHeight = () => {
-      setChartHeight(Math.max(280, Math.floor(body.getBoundingClientRect().height)));
-    };
-    const observer = new ResizeObserver(updateChartHeight);
-    observer.observe(body);
-    updateChartHeight();
-
-    return () => observer.disconnect();
-  }, [open]);
+  const closeModal = useCallback(() => {
+    restorePageRef.current?.();
+    restorePageRef.current = null;
+    onClose();
+  }, [onClose]);
 
   useEffect(() => {
     if (open) {
@@ -76,8 +67,30 @@ const ChartFullscreenModal = ({
       return undefined;
     }
 
+    const addCandlestickEndPadding = (axis: Highcharts.XAxisOptions): Highcharts.XAxisOptions => ({
+      ...axis,
+      ...(chartMode === "candlestick" ? { maxPadding: Math.max(axis.maxPadding ?? 0, 0.14) } : {}),
+    });
+    const shiftCandlestickAxisLabels = (axis: Highcharts.YAxisOptions): Highcharts.YAxisOptions => ({
+      ...axis,
+      ...(chartMode === "candlestick"
+        ? { labels: { ...axis.labels, x: Math.max(axis.labels?.x ?? 0, 48) } }
+        : {}),
+    });
+    const fullscreenXAxis = Array.isArray(selectedOptions.xAxis)
+      ? selectedOptions.xAxis.map(addCandlestickEndPadding)
+      : selectedOptions.xAxis
+        ? addCandlestickEndPadding(selectedOptions.xAxis)
+        : undefined;
+    const fullscreenYAxis = Array.isArray(selectedOptions.yAxis)
+      ? selectedOptions.yAxis.map(shiftCandlestickAxisLabels)
+      : selectedOptions.yAxis
+        ? shiftCandlestickAxisLabels(selectedOptions.yAxis)
+        : undefined;
+
     // Shared drag-pan handler for fullscreen charts; wheel scrolling stays available.
     const attachInteraction = (chart: Highcharts.Chart) => {
+      const listeners = new AbortController();
       let isDragging = false;
       let dragStartX = 0, dragStartY = 0;
       let dxMin = 0, dxMax = 0, dyMin = 0, dyMax = 0;
@@ -104,23 +117,37 @@ const ChartFullscreenModal = ({
         dyMax = typeof chart.yAxis[0].max === 'number' ? chart.yAxis[0].max : 1;
         chart.container.style.cursor = 'grabbing';
         e.preventDefault();
-      });
+      }, { signal: listeners.signal });
       document.addEventListener('mousemove', (e: MouseEvent) => {
         if (!isDragging) return;
         const xShift = -((e.clientX - dragStartX) / chart.plotWidth)  * (dxMax - dxMin);
         const yShift =  ((e.clientY - dragStartY) / chart.plotHeight) * (dyMax - dyMin);
         chart.xAxis[0].setExtremes(dxMin + xShift, dxMax + xShift, false);
         chart.yAxis[0].setExtremes(dyMin + yShift, dyMax + yShift, true);
-      });
+      }, { signal: listeners.signal });
       document.addEventListener('mouseup', () => {
         if (!isDragging) return;
         isDragging = false;
         chart.container.style.cursor = 'crosshair';
-      });
+      }, { signal: listeners.signal });
       chart.container.addEventListener('dblclick', () => {
         chart.xAxis[0].setExtremes(undefined, undefined, false);
         chart.yAxis[0].setExtremes(undefined, undefined, true);
-      });
+      }, { signal: listeners.signal });
+      const chartBody = chart.renderTo.parentElement;
+      if (chartBody && typeof ResizeObserver !== "undefined") {
+        const fitChartToBody = () => {
+          const height = chartBody.clientHeight;
+          if (height > 0 && chart.chartHeight !== height) {
+            chart.setSize(undefined, height, false);
+          }
+        };
+        const observer = new ResizeObserver(fitChartToBody);
+        observer.observe(chartBody);
+        fitChartToBody();
+        listeners.signal.addEventListener("abort", () => observer.disconnect(), { once: true });
+      }
+      Highcharts.addEvent(chart, "destroy", () => listeners.abort());
     };
 
     // The standard Highcharts renderer used for Classic charts does not
@@ -181,8 +208,12 @@ const ChartFullscreenModal = ({
       ...selectedOptions,
       chart: {
         ...selectedOptions.chart,
-        height: chartHeight,
-        spacing: [12, 24, 20, 12],
+        // The dashboard chart has a compact fixed height; in fullscreen let
+        // Highcharts measure the full-size container instead.
+        height: null,
+        // Candlestick charts need extra room at the right edge so the final
+        // candle cannot run underneath the opposite-axis value labels.
+        spacing: chartMode === "candlestick" ? [12, 92, 20, 12] : [12, 24, 20, 12],
         zoomType: undefined,
         panning: { enabled: false },
         zooming: { mouseWheel: { enabled: false } },
@@ -213,8 +244,10 @@ const ChartFullscreenModal = ({
           }
         },
       },
+      xAxis: fullscreenXAxis,
+      yAxis: fullscreenYAxis,
     };
-  }, [chartHeight, chartMode, highchartsOptions, stockOptions]);
+  }, [chartMode, highchartsOptions, stockOptions]);
 
   const fullscreenEchartsOption = useMemo(() => {
     if (!echartsOption) {
@@ -261,6 +294,12 @@ const ChartFullscreenModal = ({
     }
 
     const previousOverflow = document.body.style.overflow;
+    const previousScrollY = window.scrollY;
+    const restorePage = () => {
+      document.body.style.overflow = previousOverflow;
+      window.scrollTo(0, previousScrollY);
+    };
+    restorePageRef.current = restorePage;
     document.body.style.overflow = "hidden";
     const triggerResize = () => {
       window.dispatchEvent(new Event("resize"));
@@ -270,29 +309,29 @@ const ChartFullscreenModal = ({
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        onClose();
+        closeModal();
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
 
     return () => {
-      document.body.style.overflow = previousOverflow;
+      restorePage();
+      if (restorePageRef.current === restorePage) restorePageRef.current = null;
       window.removeEventListener("keydown", handleKeyDown);
-      window.requestAnimationFrame(triggerResize);
     };
-  }, [onClose, open]);
+  }, [closeModal, open]);
 
   if (!open) {
     return null;
   }
 
-  return (
+  return createPortal((
     <div
       className="modal-overlay chart-fullscreen-overlay"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
-          onClose();
+          closeModal();
         }
       }}
     >
@@ -338,18 +377,21 @@ const ChartFullscreenModal = ({
             <button
               type="button"
               className="close-button"
-              onClick={onClose}
+              onClick={closeModal}
+              aria-label="Close fullscreen chart"
             >
               <X size={19} />
             </button>
           </div>
         </div>
 
-        <div className="chart-fullscreen-body" ref={chartBodyRef}>
+        <div className="chart-fullscreen-body">
           {chartMode === "classic" && fullscreenHighchartsOptions ? (
             <HighchartsChart
+              key="fullscreen-classic-chart"
               highcharts={Highcharts}
               constructorType="chart"
+              allowChartUpdate={false}
               options={fullscreenHighchartsOptions}
               containerProps={{
                 style: {
@@ -360,6 +402,7 @@ const ChartFullscreenModal = ({
             />
           ) : chartMode === "candlestick" && fullscreenHighchartsOptions ? (
             <HighchartsChart
+              key="fullscreen-candlestick-chart"
               highcharts={
                 chartMode === "candlestick"
                   ? HighchartsStock
@@ -368,6 +411,7 @@ const ChartFullscreenModal = ({
               constructorType={
                 chartMode === "candlestick" ? "stockChart" : "chart"
               }
+              allowChartUpdate={false}
               options={fullscreenHighchartsOptions}
               containerProps={{
                 style: {
@@ -381,7 +425,7 @@ const ChartFullscreenModal = ({
               option={fullscreenEchartsOption}
               style={{
                 width: "100%",
-                height: `${chartHeight}px`,
+                height: "100%",
               }}
               notMerge
               lazyUpdate
@@ -390,7 +434,7 @@ const ChartFullscreenModal = ({
         </div>
       </div>
     </div>
-  );
+  ), document.body);
 };
 
 export default ChartFullscreenModal;

@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import Highcharts from "highcharts";
 import HighchartsStock from "highcharts/highstock";
 import HighchartsReact from "highcharts-react-official";
@@ -19,11 +19,6 @@ import type { UserAccount } from "../types/finance";
 import { exportFinanceToExcel } from "../utils/excel";
 import { formatCurrency } from "../utils/money";
 import { calculateBalanceStats, getAuthoritativeBalance } from "../utils/balance";
-
-const HighchartsChart =
-  (HighchartsReact as unknown as {
-    default?: typeof HighchartsReact;
-  }).default ?? HighchartsReact;
 
 const HighchartsStockChart =
   (HighchartsReact as unknown as {
@@ -67,6 +62,13 @@ const parseLocalDate = (value: string) => {
   }
 };
 
+const getTimeGreeting = (hour: number) => {
+  if (hour >= 5 && hour < 12) return "Good morning";
+  if (hour >= 12 && hour < 17) return "Good afternoon";
+  if (hour >= 17 && hour < 22) return "Good evening";
+  return "Good night";
+};
+
 const createDailySeries = (
   startDate: Date,
   endDate: Date,
@@ -108,6 +110,8 @@ interface Props {
 }
 
 const Dashboard = ({ user, onAdd }: Props) => {
+  const dashboardRef = useRef<HTMLDivElement>(null);
+  const [currentHour, setCurrentHour] = useState(() => new Date().getHours());
   const [refreshKey, setRefreshKey] = useState(0);
   const [fullscreenChart, setFullscreenChart] = useState<
     | {
@@ -121,11 +125,54 @@ const Dashboard = ({ user, onAdd }: Props) => {
       }
     | null
   >(null);
+  const closeFullscreenChart = useCallback(() => setFullscreenChart(null), []);
 
   // Force re-render when transactions change
   useEffect(() => {
     setRefreshKey(prev => prev + 1);
   }, [user.transactions.length, user.currentBalance, user.startingBalance, user.investmentIncluded, (user.investments ?? []).map(i => i.currentValue).join(','), user.transactions.map(t => `${t.id}-${t.amount}-${t.type}`).join(',')]); 
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setCurrentHour(new Date().getHours()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  // The sidebar collapse animates the content width without resizing the
+  // browser window. Reflow Highcharts when its chart panels change size so the
+  // plot and navigator continue to use the full available width.
+  useEffect(() => {
+    const root = dashboardRef.current;
+    if (!root || typeof ResizeObserver === "undefined") return;
+
+    const chartContainers = Array.from(root.querySelectorAll<HTMLElement>(".chart-container"));
+    if (!chartContainers.length) return;
+
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        Highcharts.charts.forEach((chart) => {
+          if (!chart || !root.contains(chart.container)) return;
+
+          const host = chart.container.closest<HTMLElement>(".dashboard-overview-chart")
+            ?.querySelector<HTMLElement>(".chart-container");
+          const width = host?.clientWidth;
+          const height = host?.clientHeight;
+          if (width && height && (chart.chartWidth !== width || chart.chartHeight !== height)) {
+            chart.setSize(width, height, false);
+          } else {
+            chart.reflow();
+          }
+        });
+      });
+    });
+
+    chartContainers.forEach((container) => observer.observe(container));
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, []);
 
   const formatMoney = (value: number) => formatCurrency(value, user.currency);
 
@@ -323,7 +370,8 @@ const Dashboard = ({ user, onAdd }: Props) => {
       )
     );
 
-    // Create cumulative series (always going up)
+    // Plot cumulative profit and cumulative loss as positive totals on the
+    // same scale. Net P&L is calculated separately as profit minus loss.
     let cumulativeProfit = 0;
     let cumulativeLoss = 0;
     const result = [];
@@ -840,23 +888,6 @@ const Dashboard = ({ user, onAdd }: Props) => {
     refreshKey,
   ]);
 
-  const categoryData = useMemo(() => {
-    const categories: Record<string, number> = {};
-
-    user.transactions
-      .filter((transaction) => transaction.type === "loss")
-      .forEach((transaction) => {
-        categories[transaction.category] =
-          (categories[transaction.category] || 0) + transaction.amount;
-      });
-
-    return Object.entries(categories)
-      .map(([name, amount]) => ({ name, amount }))
-      .sort((left, right) => right.amount - left.amount)
-      .slice(0, 6);
-  }, [user.transactions, refreshKey]);
-
-  // ─── Shared helper: attach left-click pan to Highcharts charts ───
   const attachChartInteraction = (chart: Highcharts.Chart) => {
     let isDragging = false;
     let dragStartX = 0, dragStartY = 0;
@@ -1269,154 +1300,8 @@ const Dashboard = ({ user, onAdd }: Props) => {
     ],
   };
 
-  const PIE_COLORS = ["#4f8fff", "#00e5a0", "#f5a623", "#ff4d6a", "#a78bfa", "#34d399"];
-
-  const expenseOption = {
-    backgroundColor: "transparent",
-    animation: true,
-    animationDuration: 1200,
-    animationEasing: "cubicOut",
-    tooltip: {
-      trigger: "item",
-      backgroundColor: "transparent",
-      borderWidth: 0,
-      padding: 0,
-      formatter: (params: unknown) => {
-        const p = params as { name: string; value: number; percent: number; color: string };
-        return `<div style="background:rgba(10,14,24,0.96);border:1.5px solid rgba(59,130,246,0.4);border-radius:12px;padding:12px 16px;box-shadow:0 12px 40px rgba(0,0,0,0.7),inset 0 1px 2px rgba(255,255,255,0.08)">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${p.color}"></span><span style="color:#e8edf5;font-weight:700;font-size:13px">${p.name}</span></div>
-          <div style="color:#3b82f6;font-weight:800;font-size:16px;margin-bottom:6px">${formatMoney(p.value)}</div>
-          <div style="display:flex;justify-content:space-between;align-items:center;padding-top:8px;border-top:1px solid rgba(59,130,246,0.2)"><span style="color:#5e6b80;font-size:11px;font-weight:600">Percentage</span><span style="color:#10b981;font-weight:700;font-size:12px">${p.percent.toFixed(1)}%</span></div>
-        </div>`;
-      },
-    },
-    legend: {
-      top: "bottom",
-      icon: "circle",
-      itemGap: 16,
-      textStyle: { color: "#9aa5ba", fontFamily: "Inter, sans-serif", fontSize: 12, fontWeight: 600 },
-      inactiveColor: "rgba(94, 107, 128, 0.4)",
-    },
-    series: [
-      {
-        name: "Expenses",
-        type: "pie",
-        radius: ["50%", "82%"],
-        center: ["50%", "44%"],
-        avoidLabelOverlap: true,
-        itemStyle: {
-          borderColor: "rgba(6, 8, 16, 0.95)",
-          borderWidth: 3,
-          borderRadius: 8,
-          shadowColor: "rgba(0, 0, 0, 0.4)",
-          shadowBlur: 12,
-          shadowOffsetX: 0,
-          shadowOffsetY: 4,
-        },
-        label: {
-          show: true,
-          color: "#9aa5ba",
-          fontFamily: "Inter, sans-serif",
-          fontSize: 11,
-          fontWeight: 600,
-          formatter: "{b}",
-        },
-        emphasis: {
-          itemStyle: {
-            shadowBlur: 24,
-            shadowOffsetX: 0,
-            shadowColor: "rgba(59, 130, 246, 0.6)",
-            borderColor: "rgba(59, 130, 246, 0.8)",
-            borderWidth: 3,
-          },
-          label: { show: true, fontWeight: 800, fontSize: 13, color: "#e8edf5" },
-          scale: true,
-          scaleSize: 8,
-        },
-        data:
-          categoryData.length > 0
-            ? categoryData.map((item, index) => ({
-                name: item.name,
-                value: item.amount,
-                itemStyle: { color: PIE_COLORS[index % PIE_COLORS.length] },
-              }))
-            : [{ name: "No expenses", value: 1, itemStyle: { color: "#1e2738" }, label: { color: "#5e6b80" } }],
-      },
-    ],
-  };
-
-  const gaugeColor = performancePercentage >= 70 ? "#10b981" : performancePercentage >= 40 ? "#f5a623" : "#ff4d6a";
-  const gaugeGlow  = performancePercentage >= 70 ? "rgba(16,185,129,0.5)"  : performancePercentage >= 40 ? "rgba(245,166,35,0.5)"  : "rgba(255,77,106,0.5)";
-
-  const healthOption = {
-    backgroundColor: "transparent",
-    animation: true,
-    animationDuration: 1600,
-    animationEasing: "cubicOut",
-    series: [
-      {
-        type: "gauge",
-        startAngle: 200,
-        endAngle: -20,
-        center: ["50%", "58%"],
-        radius: "92%",
-        min: 0,
-        max: 100,
-        progress: {
-          show: true,
-          roundCap: true,
-          width: 24,
-          itemStyle: {
-            color: {
-              type: "linear",
-              x: 0, y: 0, x2: 1, y2: 0,
-              colorStops: [
-                { offset: 0, color: performancePercentage >= 40 ? "#4f8fff" : "#ff4d6a" },
-                { offset: 1, color: gaugeColor },
-              ],
-            },
-            shadowColor: gaugeGlow,
-            shadowBlur: 20,
-            shadowOffsetX: 0,
-            shadowOffsetY: 6,
-          },
-        },
-        axisLine: {
-          roundCap: true,
-          lineStyle: {
-            width: 24,
-            color: [[1, "rgba(30, 39, 56, 0.7)"]],
-            shadowColor: "rgba(0, 0, 0, 0.3)",
-            shadowBlur: 8,
-          },
-        },
-        axisTick: { show: false },
-        splitLine: { show: false },
-        axisLabel: { show: false },
-        pointer: { show: false },
-        detail: {
-          valueAnimation: true,
-          formatter: "{value}%",
-          color: "#e8edf5",
-          fontSize: 36,
-          fontWeight: "900",
-          fontFamily: "Inter, sans-serif",
-          offsetCenter: [0, "8%"],
-        },
-        title: {
-          offsetCenter: [0, "40%"],
-          color: "#5e6b80",
-          fontSize: 12,
-          fontWeight: 600,
-          fontFamily: "Inter, sans-serif",
-        },
-        data: [{ value: Number(performancePercentage.toFixed(1)), name: "financial health" }],
-      },
-    ],
-  };
-
   return (
-    <div className="page-content">
+    <div className="page-content" ref={dashboardRef}>
       {!user.transactions.length && (
         <div className="storage-info dashboard-intro">
           <div className="storage-icon">+</div>
@@ -1441,11 +1326,17 @@ const Dashboard = ({ user, onAdd }: Props) => {
           <span className="eyebrow">PERSONAL FINANCE</span>
 
           <h1>
-            Good evening, {user.name.split(" ")[0]}{" "}
-            <span className="green-star">*</span>
+            {getTimeGreeting(currentHour)}, <span className="dashboard-greeting-name">{user.name.trim()}</span>
+            <span
+              className="dashboard-live-indicator"
+              role="status"
+              aria-label="Dashboard active. Data reflects your saved records."
+              title="Dashboard active"
+            >
+              <i aria-hidden="true" />
+            </span>
           </h1>
 
-          <p>Here is the live view of your money right now.</p>
         </div>
 
         <div className="dashboard-actions">
@@ -1550,12 +1441,11 @@ const Dashboard = ({ user, onAdd }: Props) => {
         />
       </div>
 
-      <div className="charts-two-column">
+      <div className="charts-two-column dashboard-chart-grid">
         <ChartPanel
           className="dashboard-overview-chart"
           title="Wealth Chart"
           subtitle="Your wealth over time, built from profits and losses"
-          action={<span className="live-badge">LIVE</span>}
           onClick={() =>
             setFullscreenChart({
               title: "Wealth Chart",
@@ -1563,11 +1453,15 @@ const Dashboard = ({ user, onAdd }: Props) => {
               kind: "highcharts",
               highchartsOptions: wealthOptions,
               stockOptions: candlestickOptions,
-              defaultChartMode: "classic",
+              defaultChartMode: "candlestick",
             })
           }
         >
-          <HighchartsChart highcharts={Highcharts} options={wealthOptions} />
+          <HighchartsStockChart
+            highcharts={HighchartsStock}
+            constructorType="stockChart"
+            options={candlestickOptions}
+          />
         </ChartPanel>
 
         <ChartPanel
@@ -1592,77 +1486,6 @@ const Dashboard = ({ user, onAdd }: Props) => {
         </ChartPanel>
       </div>
 
-      <div className="charts-one-column">
-        <ChartPanel
-          title="Candlestick"
-          subtitle="Daily balance candles with time filters"
-          action={<span className="live-badge">ALL TIME</span>}
-          onClick={() =>
-            setFullscreenChart({
-              title: "Candlestick",
-              subtitle: "Daily balance candles with time filters",
-              kind: "stock",
-              highchartsOptions: wealthOptions,
-              stockOptions: candlestickOptions,
-              defaultChartMode: "candlestick",
-            })
-          }
-        >
-          <HighchartsStockChart
-            highcharts={HighchartsStock}
-            constructorType="stockChart"
-            options={candlestickOptions}
-          />
-        </ChartPanel>
-      </div>
-
-      <div className="charts-three-column">
-        <ChartPanel
-          title="Expense breakdown"
-          subtitle="Where your money goes"
-          onClick={() =>
-            setFullscreenChart({
-              title: "Expense breakdown",
-              subtitle: "Where your money goes",
-              kind: "echarts",
-              echartsOption: expenseOption,
-            })
-          }
-        >
-          <div className="echart-panel">
-            <EChartsChart
-              option={expenseOption}
-              style={{ height: 280, width: "100%" }}
-              notMerge
-              lazyUpdate
-            />
-          </div>
-        </ChartPanel>
-
-        <ChartPanel
-          title="Financial health"
-          subtitle="Based on your net performance"
-          onClick={() =>
-            setFullscreenChart({
-              title: "Financial health",
-              subtitle: "Based on your net performance",
-              kind: "echarts",
-              echartsOption: healthOption,
-            })
-          }
-        >
-          <div className="echart-panel">
-            <EChartsChart
-              option={healthOption}
-              style={{ height: 280, width: "100%" }}
-              notMerge
-              lazyUpdate
-            />
-          </div>
-        </ChartPanel>
-
-      </div>
-
       <ChartFullscreenModal
         open={Boolean(fullscreenChart)}
         title={fullscreenChart?.title ?? ""}
@@ -1672,7 +1495,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
         stockOptions={fullscreenChart?.stockOptions}
         defaultChartMode={fullscreenChart?.defaultChartMode}
         echartsOption={fullscreenChart?.echartsOption}
-        onClose={() => setFullscreenChart(null)}
+        onClose={closeFullscreenChart}
       />
     </div>
   );

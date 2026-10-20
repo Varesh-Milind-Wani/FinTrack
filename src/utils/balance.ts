@@ -6,7 +6,25 @@ import type { UserAccount } from '../types/finance';
  */
 export const getInvestmentTotal = (user: UserAccount): number => {
   if (!user.investmentIncluded) return 0;
-  return (user.investments ?? []).reduce((sum, inv) => sum + inv.currentValue, 0);
+  return (user.investments ?? []).reduce((sum, inv) => sum + (inv.isClosed ? 0 : inv.currentValue), 0);
+};
+
+/** Cash proceeds from exited holdings, counted once they leave the portfolio. */
+export const getInvestmentProceeds = (user: UserAccount): number => {
+  const linkedProceeds = new Map(
+    (user.withdrawals ?? [])
+      .filter((entry) => entry.method === "investment" && entry.sourceInvestmentId)
+      .map((entry) => [entry.sourceInvestmentId!, entry.amount]),
+  );
+
+  return (user.investments ?? []).reduce((sum, investment) => {
+    if (!investment.isClosed) return sum;
+    const proceeds = linkedProceeds.get(investment.id)
+      ?? (investment.exitPrice != null
+        ? investment.exitPrice * (investment.quantity ?? 1)
+        : investment.currentValue);
+    return sum + proceeds;
+  }, 0);
 };
 
 export const getExpenseTotal = (user: UserAccount): number => {
@@ -45,7 +63,7 @@ export const getAuthoritativeBalance = (user: UserAccount): number => {
       : calculateCurrentBalance(user);
 
   // Add investment total if toggle is ON
-  return tradingBalance + getInvestmentTotal(user);
+  return tradingBalance + getInvestmentTotal(user) + getInvestmentProceeds(user);
 };
 
 /**
@@ -70,5 +88,6 @@ export const calculateBalanceStats = (user: UserAccount) => {
     netPerformance,
     startingBalance: user.startingBalance,
     investmentTotal: getInvestmentTotal(user),
+    investmentProceeds: getInvestmentProceeds(user),
   };
 };
