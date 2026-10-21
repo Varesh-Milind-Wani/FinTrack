@@ -575,6 +575,20 @@ button {
    FORMS
 ========================================= */
 
+.withdrawal-method-select {
+  color-scheme: dark;
+}
+
+.withdrawal-method-select option {
+  background-color: #111827;
+  color: #e4ebf6;
+}
+
+.withdrawal-method-select option:checked {
+  background: #2563eb linear-gradient(#2563eb, #2563eb);
+  color: #fff;
+}
+
 input, select, textarea {
   font-family: inherit;
   font-size: 14px;
@@ -4713,6 +4727,30 @@ select.filter-dropdown:focus,
   border: 1px solid var(--border);
   border-radius: 12px;
   background: rgba(255, 255, 255, .02);
+}
+
+.investment-direct-pnl-control {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.investment-direct-pnl-control .investment-closed-toggle {
+  align-items: flex-start;
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.investment-modal .form-grid .investment-direct-pnl-control input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  margin: 0;
+  padding: 0;
+}
+
+.investment-direct-pnl-control .investment-closed-toggle > span {
+  gap: 4px;
 }
 
 .investment-closed-toggle {

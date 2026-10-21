@@ -35,23 +35,25 @@ const InvestmentPage = ({ user, onSave }: Props) => {
     setShowModal(true);
   };
   const save = () => {
-    const quantity = form.quantity ?? 1;
-    const amount = quantity * (form.entryPrice ?? 0);
-    if (!form.name.trim() || amount <= 0 || form.currentValue < 0 || quantity <= 0 || (form.isClosed && (!form.exitPrice || form.exitPrice <= 0)) || (form.exitPrice != null && form.exitPrice < 0)) return;
+    const quantity = form.quantity || 1;
+    const directPnlMode = form.directPnl != null;
+    const amount = directPnlMode ? form.amount : quantity * (form.entryPrice ?? 0);
+    const currentValue = directPnlMode ? Math.max(0, amount + (form.directPnl ?? 0)) : form.exitPrice != null ? form.exitPrice * quantity : form.currentValue;
+    if (!form.name.trim() || (!directPnlMode && (amount <= 0 || quantity <= 0 || (form.isClosed && (!form.exitPrice || form.exitPrice <= 0)) || (form.exitPrice != null && form.exitPrice < 0)))) return;
     const investmentId = editing?.id ?? crypto.randomUUID();
     const existingSale = (user.withdrawals ?? []).find((entry) => entry.sourceInvestmentId === investmentId);
     const savedForm = {
       ...form,
       amount,
       quantity,
-      currentValue: form.exitPrice != null ? form.exitPrice * quantity : form.currentValue,
+      currentValue,
     };
     const next = editing ? investments.map((item) => item.id === editing.id ? { ...editing, ...savedForm } : item) : [{ id: investmentId, ...savedForm }, ...investments];
     const otherWithdrawals = (user.withdrawals ?? []).filter((entry) => entry.sourceInvestmentId !== investmentId);
     const saleWithdrawal = form.isClosed ? {
       id: existingSale?.id ?? crypto.randomUUID(),
       date: `${form.date}T12:00:00`,
-      amount: (form.exitPrice ?? 0) * quantity,
+      amount: currentValue,
       method: "investment" as const,
       sourceInvestmentId: investmentId,
       note: `Investment sale · ${form.name.trim()}`,
@@ -139,8 +141,9 @@ const Summary = ({ label, value, detail, icon, kind }: { label: string; value: s
 
 const InvestmentModal = ({ editing, form, currency, setForm, onClose, onSave }: { editing: Investment | null; form: Omit<Investment, "id">; currency: string; setForm: React.Dispatch<React.SetStateAction<Omit<Investment, "id">>>; onClose: () => void; onSave: () => void }) => {
   const quantity = form.quantity ?? 1;
-  const investmentAmount = quantity * (form.entryPrice ?? 0);
-  const exitValue = form.exitPrice != null ? form.exitPrice * quantity : form.currentValue;
+  const directPnlMode = form.directPnl != null;
+  const investmentAmount = directPnlMode ? form.amount : quantity * (form.entryPrice ?? 0);
+  const exitValue = directPnlMode ? Math.max(0, investmentAmount + (form.directPnl ?? 0)) : form.exitPrice != null ? form.exitPrice * quantity : form.currentValue;
   const realizedPnl = exitValue - investmentAmount;
 
   return <div className="modal-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
@@ -162,6 +165,14 @@ const InvestmentModal = ({ editing, form, currency, setForm, onClose, onSave }: 
 
       <div className="modal-body">
         <div className="form-grid">
+          <div className="investment-direct-pnl-control" style={{ gridColumn: "1 / -1" }}>
+            <label className="investment-closed-toggle">
+            <input type="checkbox" checked={directPnlMode} onChange={(event) => setForm((current) => event.target.checked
+              ? { ...current, directPnl: 0, entryPrice: undefined, exitPrice: undefined }
+              : { ...current, directPnl: undefined })} />
+              <span><strong>Enter profit / loss directly</strong><small>Use this when you know the result but don’t have the entry and exit prices.</small></span>
+            </label>
+          </div>
           <label>
             Investment name
             <input required value={form.name} placeholder="e.g. Reliance Industries" onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} />
@@ -174,19 +185,24 @@ const InvestmentModal = ({ editing, form, currency, setForm, onClose, onSave }: 
           </label>
           <label>
             Quantity
-            <input type="number" min="0.000001" step="any" inputMode="decimal" required value={form.quantity ?? 1} onChange={(event) => setForm((current) => {
+            <input type="number" min="0.000001" step="any" inputMode="decimal" required={!directPnlMode} disabled={directPnlMode} value={form.quantity ?? 1} onChange={(event) => setForm((current) => {
               const nextQuantity = Number(event.target.value);
               return { ...current, quantity: nextQuantity, currentValue: current.exitPrice != null ? current.exitPrice * nextQuantity : current.currentValue };
             })} />
           </label>
           <label>
             <span className="investment-label-row"><span>Entry price</span><span className="investment-field-hint">Per unit at purchase</span></span>
-            <input type="number" min="0.01" step="any" inputMode="decimal" required value={form.entryPrice ?? ""} placeholder="Enter price per unit" onChange={(event) => setForm((current) => ({ ...current, entryPrice: event.target.value === "" ? undefined : Number(event.target.value) }))} />
+            <input type="number" min="0.01" step="any" inputMode="decimal" required={!directPnlMode} disabled={directPnlMode} value={form.entryPrice ?? ""} placeholder="Enter price per unit" onChange={(event) => setForm((current) => ({ ...current, entryPrice: event.target.value === "" ? undefined : Number(event.target.value) }))} />
           </label>
           <label>
             <span className="investment-label-row"><span>Amount invested</span><span className="investment-field-hint">Quantity × entry price</span></span>
-            <input type="number" value={investmentAmount || ""} placeholder="Calculated automatically" readOnly aria-readonly="true" />
+            <input type="number" min="0" step="any" required={!directPnlMode} value={investmentAmount || ""} placeholder={directPnlMode ? "Optional in direct mode" : "Calculated automatically"} readOnly={!directPnlMode} aria-readonly={!directPnlMode} onChange={(event) => setForm((current) => ({ ...current, amount: Number(event.target.value) }))} />
           </label>
+          {directPnlMode && <label>
+            Profit / loss
+            <input type="number" step="any" value={form.directPnl ?? 0} onChange={(event) => setForm((current) => ({ ...current, directPnl: Number(event.target.value) }))} />
+            <span className="investment-field-hint">Enter a positive amount for profit or a negative amount for loss.</span>
+          </label>}
           <label>
             Current value
             <input
@@ -195,14 +211,14 @@ const InvestmentModal = ({ editing, form, currency, setForm, onClose, onSave }: 
               step="any"
               value={form.exitPrice != null ? form.exitPrice * quantity : form.currentValue || ""}
               placeholder={form.exitPrice != null ? "Calculated from exit price × quantity" : "Enter current value"}
-              readOnly={form.exitPrice != null}
-              aria-readonly={form.exitPrice != null}
+              readOnly={directPnlMode || form.exitPrice != null}
+              aria-readonly={directPnlMode || form.exitPrice != null}
               onChange={(event) => setForm((current) => ({ ...current, currentValue: Number(event.target.value) }))}
             />
           </label>
           <label>
             <span className="investment-label-row"><span>Exit price</span><span className="investment-field-hint">Per unit when sold</span></span>
-            <input type="number" min="0" step="any" inputMode="decimal" required={Boolean(form.isClosed)} value={form.exitPrice ?? ""} placeholder={form.isClosed ? "Required to close position" : "Optional"} onChange={(event) => setForm((current) => {
+            <input type="number" min="0" step="any" inputMode="decimal" required={Boolean(form.isClosed) && !directPnlMode} disabled={directPnlMode} value={form.exitPrice ?? ""} placeholder={form.isClosed ? "Required to close position" : "Optional"} onChange={(event) => setForm((current) => {
               const exitPrice = event.target.value === "" ? undefined : Number(event.target.value);
               return { ...current, exitPrice, currentValue: exitPrice != null ? exitPrice * (current.quantity ?? 1) : current.currentValue };
             })} />
@@ -221,7 +237,7 @@ const InvestmentModal = ({ editing, form, currency, setForm, onClose, onSave }: 
             <input type="checkbox" checked={Boolean(form.isClosed)} onChange={(event) => setForm((current) => ({ ...current, isClosed: event.target.checked }))} />
             <span><strong>Closed position</strong><small>Mark this investment as exited or sold.</small></span>
           </label>
-          {form.isClosed && (
+          {(form.isClosed || directPnlMode) && (
             <div className={`investment-realized-result ${realizedPnl >= 0 ? "positive" : "negative"}`} aria-live="polite">
               <span>Realized profit / loss</span>
               <strong>{realizedPnl >= 0 ? "+" : "−"}{formatCurrency(Math.abs(realizedPnl), currency)}</strong>

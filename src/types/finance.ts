@@ -16,6 +16,8 @@ export interface Investment {
   entryPrice?: number;
   /** Per-unit sale price, when the holding has been exited. */
   exitPrice?: number;
+  /** Optional directly entered realized/unrealized P&L when prices are unknown. */
+  directPnl?: number;
   date: string;            // Date of investment
   note: string;
 }
@@ -50,6 +52,10 @@ export interface Transaction {
   /** Cost applied when this transaction was calculated. */
   costAmount?: number;
   price: number;
+  /** Optional trade sizing details used to calculate realised P&L. */
+  entryPrice?: number;
+  exitPrice?: number;
+  quantity?: number;
   category: string;
   note: string;
   /** Number of profit trades (1–5). */

@@ -309,7 +309,7 @@ export const createAccount = (
     defaultCostSchedules: [],
     expenseIncludedByDefault: true,
     createdAt: new Date().toISOString(),
-    transactions: createDefaultSampleTrades(),
+    transactions: [],
   };
 
   saveCurrentUser(newUser);

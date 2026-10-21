@@ -51,7 +51,9 @@ export const calculateCurrentBalance = (user: UserAccount): number => {
 /**
  * Get the authoritative current balance used across ALL pages.
  * - Respects manual balance override from Settings.
- * - Adds investment total when investmentIncluded toggle is ON.
+ * - Adds open investment holdings when investmentIncluded toggle is ON.
+ * Closed investment proceeds remain available in Withdrawals, but are not
+ * part of the trading balance or net performance.
  */
 export const getAuthoritativeBalance = (user: UserAccount): number => {
   // Base trading balance: manual override or calculated from transactions
@@ -63,7 +65,7 @@ export const getAuthoritativeBalance = (user: UserAccount): number => {
       : calculateCurrentBalance(user);
 
   // Add investment total if toggle is ON
-  return tradingBalance + getInvestmentTotal(user) + getInvestmentProceeds(user);
+  return tradingBalance + getInvestmentTotal(user);
 };
 
 /**

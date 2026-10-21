@@ -71,6 +71,9 @@ const AddTransactionModal = ({
       ? initialTransaction.grossAmount ?? initialTransaction.amount
       : 0
   );
+  const [entryPrice, setEntryPrice] = useState(initialTransaction?.entryPrice?.toString() ?? "");
+  const [exitPrice, setExitPrice] = useState(initialTransaction?.exitPrice?.toString() ?? "");
+  const [quantity, setQuantity] = useState(initialTransaction?.quantity?.toString() ?? "");
 
   const handleProfitChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = Number(e.target.value);
@@ -84,8 +87,17 @@ const AddTransactionModal = ({
     if (val > 0) setProfitAmount(0);
   };
 
-  const currentType: TransactionType = lossAmount > 0 && profitAmount === 0 ? "loss" : "profit";
-  const activeAmount = profitAmount || lossAmount;
+  const entry = Number(entryPrice);
+  const exit = Number(exitPrice);
+  const units = Number(quantity);
+  const hasCalculatedPnl = entryPrice !== "" && exitPrice !== "" && quantity !== "" && units > 0;
+  const calculatedPnl = hasCalculatedPnl ? (exit - entry) * units : 0;
+  const investedMoney = entryPrice !== "" && quantity !== "" && units > 0 ? entry * units : 0;
+  const exitedMoney = exitPrice !== "" && quantity !== "" && units > 0 ? exit * units : 0;
+  const currentType: TransactionType = hasCalculatedPnl
+    ? calculatedPnl < 0 ? "loss" : "profit"
+    : lossAmount > 0 && profitAmount === 0 ? "loss" : "profit";
+  const activeAmount = hasCalculatedPnl ? Math.abs(calculatedPnl) : profitAmount || lossAmount;
 
   const [category, setCategory] = useState(
     initialTransaction?.category ?? "Business Trade"
@@ -113,7 +125,7 @@ const AddTransactionModal = ({
     event.preventDefault();
 
     const selectedDate = new Date(dateTime);
-    if (!activeAmount || Number.isNaN(selectedDate.getTime())) return;
+    if ((!activeAmount && !hasCalculatedPnl) || Number.isNaN(selectedDate.getTime())) return;
 
     // A saved transaction keeps the cost it was created with. Cost schedule
     // updates only affect new transactions.
@@ -135,6 +147,7 @@ const AddTransactionModal = ({
       grossAmount: activeAmount,
       costAmount: appliedCost,
       price: activeAmount,
+      ...(hasCalculatedPnl ? { entryPrice: entry, exitPrice: exit, quantity: units } : {}),
       category,
       note: note.trim() || (currentType === "profit" ? "Profit Trade" : "Loss Trade"),
       confidenceLevel: confidenceLevel,
@@ -227,6 +240,27 @@ const AddTransactionModal = ({
               <div style={{ fontSize: "12px", fontWeight: "700", color: "#5e6b80", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "16px" }}>Profit & Loss</div>
               <div className="form-grid" style={{ gap: "16px" }}>
                 <div className="form-group">
+                  <label htmlFor="tx-entry-price"><span className="field-label-text">Entry price</span></label>
+                  <div className="input-with-prefix"><span className="prefix">{currency}</span><input id="tx-entry-price" type="number" min="0" step="any" value={entryPrice} onChange={(event) => setEntryPrice(event.target.value)} /></div>
+                </div>
+                <div className="form-group">
+                  <label htmlFor="tx-exit-price"><span className="field-label-text">Exit price</span></label>
+                  <div className="input-with-prefix"><span className="prefix">{currency}</span><input id="tx-exit-price" type="number" min="0" step="any" value={exitPrice} onChange={(event) => setExitPrice(event.target.value)} /></div>
+                </div>
+                <div className="form-group">
+                  <label htmlFor="tx-quantity"><span className="field-label-text">Quantity</span></label>
+                  <input id="tx-quantity" type="number" min="0" step="any" value={quantity} onChange={(event) => setQuantity(event.target.value)} />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="tx-invested-money"><span className="field-label-text">Invested Money</span></label>
+                  <input id="tx-invested-money" type="text" value={formatCurrency(investedMoney, currency)} readOnly />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="tx-exited-money"><span className="field-label-text">Exited Money</span></label>
+                  <input id="tx-exited-money" type="text" value={formatCurrency(exitedMoney, currency)} readOnly />
+                </div>
+                {hasCalculatedPnl && <div className="form-group form-span-full" aria-live="polite"><span className="field-hint">Calculated {currentType === "profit" ? "profit" : "loss"}: {formatCurrency(activeAmount, currency)} ({formatCurrency(exit, currency)} − {formatCurrency(entry, currency)}) × {units}</span></div>}
+                <div className="form-group">
                   <label htmlFor="tx-profit">
                     <span className="field-label-text">
                       <ArrowUpRight size={14} /> Profit Amount
@@ -239,7 +273,8 @@ const AddTransactionModal = ({
                       type="number"
                       min="0"
                       step="0.01"
-                      value={profitAmount || ""}
+                      value={hasCalculatedPnl ? currentType === "profit" ? activeAmount : "" : profitAmount || ""}
+                      disabled={hasCalculatedPnl}
                       onChange={handleProfitChange}
                     />
                   </div>
@@ -258,7 +293,8 @@ const AddTransactionModal = ({
                       type="number"
                       min="0"
                       step="0.01"
-                      value={lossAmount || ""}
+                      value={hasCalculatedPnl ? currentType === "loss" ? activeAmount : "" : lossAmount || ""}
+                      disabled={hasCalculatedPnl}
                       onChange={handleLossChange}
                     />
                   </div>

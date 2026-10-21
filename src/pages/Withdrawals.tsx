@@ -5,6 +5,7 @@ import {
   CreditCard,
   DollarSign,
   Eye,
+  IndianRupee,
   Plus,
   Search,
   Trash2,
@@ -32,24 +33,10 @@ const Withdrawals = ({ user, onSave }: Props) => {
 
   const withdrawals = useMemo(() => user.withdrawals ?? [], [user.withdrawals]);
   const displayedWithdrawals = useMemo(() => {
-    const linkedInvestmentIds = new Set(
-      withdrawals.filter((entry) => entry.method === "investment" && entry.sourceInvestmentId).map((entry) => entry.sourceInvestmentId),
-    );
-    const legacyInvestmentSales: Withdrawal[] = (user.investments ?? [])
-      .filter((investment) => investment.isClosed && !linkedInvestmentIds.has(investment.id))
-      .map((investment) => ({
-        id: `investment-sale-${investment.id}`,
-        date: investment.date,
-        amount: investment.exitPrice != null
-          ? investment.exitPrice * (investment.quantity ?? 1)
-          : investment.currentValue,
-        method: "investment",
-        sourceInvestmentId: investment.id,
-        note: `Investment sale · ${investment.name}`,
-        status: "completed",
-      }));
-    return [...withdrawals, ...legacyInvestmentSales];
-  }, [withdrawals, user.investments]);
+    // Investment sale entries are generated when positions close and represent
+    // available proceeds, not withdrawals the user recorded on this page.
+    return withdrawals.filter((entry) => entry.method !== "investment");
+  }, [withdrawals]);
 
   const filteredWithdrawals = useMemo(() => {
     return displayedWithdrawals
@@ -421,7 +408,7 @@ const Withdrawals = ({ user, onSave }: Props) => {
                 <div className="form-group form-span-full">
                   <label htmlFor="wd-amount">
                     <span className="field-label-text">
-                      <DollarSign size={14} /> Withdrawal Amount
+                      {user.currency === "INR" ? <IndianRupee size={14} /> : <DollarSign size={14} />} Withdrawal Amount
                     </span>
                     <span className="field-hint">How much are you withdrawing?</span>
                   </label>
@@ -448,6 +435,7 @@ const Withdrawals = ({ user, onSave }: Props) => {
                   </label>
                   <select
                     id="wd-method"
+                    className="withdrawal-method-select"
                     value={method}
                     onChange={(e) => setMethod(e.target.value as any)}
                   >

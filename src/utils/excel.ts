@@ -143,9 +143,11 @@ export const exportFinanceToExcel = (user: UserAccount) => {
     ["Name", user.name],
     ["Email", user.email],
     ["Created", new Date(user.createdAt).toLocaleString()],
+    ["Created At (ISO)", user.createdAt],
     [],
     ["Financial Summary"],
     ["Starting Balance", user.startingBalance],
+    ["Manual Current Balance", user.currentBalance ?? ""],
     ["Total Profit", totalProfit],
     ["Total Loss", totalLoss],
     ["Current Balance", currentBalance],
@@ -163,6 +165,9 @@ export const exportFinanceToExcel = (user: UserAccount) => {
     Category: transaction.category,
     Note: transaction.note || "-",
     Price: transaction.price || 0,
+    "Entry Price": transaction.entryPrice ?? "",
+    "Exit Price": transaction.exitPrice ?? "",
+    Quantity: transaction.quantity ?? "",
     "Trades": transaction.type === "profit" ? (transaction.profitTradeCount || 0) : (transaction.lossTradeCount || 0),
     "Gross Amount": transaction.grossAmount || 0,
     "Cost Amount": transaction.costAmount || 0,
@@ -223,7 +228,7 @@ export const exportFinanceToExcel = (user: UserAccount) => {
   const investmentSheet = XLSX.utils.json_to_sheet((user.investments ?? []).map((item) => ({
     "Investment ID": item.id, "Recorded At (ISO)": item.date, Name: item.name, Type: item.type,
     Quantity: item.quantity ?? 1, "Closed Position": item.isClosed ?? false,
-    "Amount Invested": item.amount, "Current Value": item.currentValue, "Entry Price": item.entryPrice ?? "", "Exit Price": item.exitPrice ?? "", Note: item.note,
+    "Amount Invested": item.amount, "Current Value": item.currentValue, "Entry Price": item.entryPrice ?? "", "Exit Price": item.exitPrice ?? "", "Direct Profit / Loss": item.directPnl ?? "", Note: item.note,
   })));
   const expenseSheet = XLSX.utils.json_to_sheet((user.expenses ?? []).map((item) => ({
     "Expense ID": item.id, "Recorded At (ISO)": item.date, Name: item.name, Category: item.category, Amount: item.amount, Note: item.note,
@@ -392,6 +397,9 @@ export const importFinanceFromExcel = (file: File): Promise<FinanceImport> => {
               grossAmount: toNumber(getCellValue(row, "Gross Amount")),
               costAmount: toNumber(getCellValue(row, "Cost Amount")),
               price: toNumber(getCellValue(row, "Price")),
+              entryPrice: toNumber(getCellValue(row, "Entry Price")) || undefined,
+              exitPrice: toNumber(getCellValue(row, "Exit Price")) || undefined,
+              quantity: toNumber(getCellValue(row, "Quantity")) || undefined,
               category: String(getCellValue(row, "Category") || "Other"),
               note: noteValue.trim() === "-" ? "" : noteValue,
               profitTradeCount: type === "profit" ? toNumber(getCellValue(row, "Trades")) : undefined,
@@ -420,6 +428,7 @@ export const importFinanceFromExcel = (file: File): Promise<FinanceImport> => {
             amount: amount || (entryPrice ? entryPrice * quantity : 0),
             currentValue: toNumber(getCellValue(row, "Current Value")), entryPrice,
             exitPrice: toNumber(getCellValue(row, "Exit Price")) || undefined,
+            directPnl: getCellValue(row, "Direct Profit / Loss") === "" ? undefined : toNumber(getCellValue(row, "Direct Profit / Loss")),
             note: String(getCellValue(row, "Note") ?? ""),
           }];
         });
@@ -449,6 +458,7 @@ export const importFinanceFromExcel = (file: File): Promise<FinanceImport> => {
         try { if (typeof lockedMonthsValue === "string") lockedMonths = JSON.parse(lockedMonthsValue); } catch { /* Ignore malformed optional settings. */ }
         const settings: FinanceImport["settings"] = setting("Starting Balance") !== undefined ? {
           startingBalance: toNumber(setting("Starting Balance")),
+          currentBalance: setting("Manual Current Balance") === "" || setting("Manual Current Balance") === undefined ? undefined : toNumber(setting("Manual Current Balance")),
           startingBalanceLocked: toBoolean(setting("Starting Balance Locked")),
           startingBalancePasswordHash: String(setting("Starting Balance PIN Hash") || ""),
           startingBalancePasswordSalt: String(setting("Starting Balance PIN Salt") || ""),
@@ -461,7 +471,17 @@ export const importFinanceFromExcel = (file: File): Promise<FinanceImport> => {
           balanceAdjustment: toNumber(setting("Balance Adjustment")),
         } : undefined;
 
-        resolve({ transactions, investments, expenses, withdrawals, defaultCostSchedules, lockedMonths, settings });
+        const summaryRows = workbook.Sheets["Summary"]
+          ? XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets["Summary"], { header: 1, defval: "" })
+          : [];
+        const summaryValue = (label: string) => summaryRows.find((row) => String(row[0] ?? "").trim().toLowerCase() === label.toLowerCase())?.[1];
+        const profileName = String(summaryValue("Name") ?? "").trim();
+        const profileEmail = String(summaryValue("Email") ?? "").trim();
+        const profileCreatedAt = String(summaryValue("Created At (ISO)") ?? "").trim();
+        const profile = profileName && profileEmail && profileCreatedAt
+          ? { name: profileName, email: profileEmail, createdAt: profileCreatedAt }
+          : undefined;
+        resolve({ profile, transactions, investments, expenses, withdrawals, defaultCostSchedules, lockedMonths, settings });
       } catch (error) {
         reject(error);
       }
