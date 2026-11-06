@@ -245,6 +245,8 @@ const ChartFullscreenModal = ({
         chart.container.style.cursor = 'pointer';
         chart.container.classList.remove('dragging');
       }, { signal: listeners.signal });
+
+      
       chart.container.addEventListener('dblclick', () => {
         chart.xAxis[0].setExtremes(undefined, undefined, false);
         chart.yAxis[0].setExtremes(undefined, undefined, true);
