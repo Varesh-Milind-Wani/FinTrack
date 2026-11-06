@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef } from "react";
 import {
   ArrowDownRight,
   ArrowUpRight,
@@ -23,23 +23,36 @@ const StatCard = ({
   formatValue,
   colorVariant = "blue",
 }: StatCardProps) => {
-  const [displayValue, setDisplayValue] = useState(0);
+  const valueElementRef = useRef<HTMLDivElement>(null);
+  const previousValueRef = useRef(0);
 
   useEffect(() => {
-    const duration = 1400;
+    const element = valueElementRef.current;
+    if (!element) return;
+
+    const startValue = previousValueRef.current;
+    const duration = 480;
     const startTime = performance.now();
-    const startValue = 0;
     const delta = value - startValue;
+
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      element.textContent = formatValue ? formatValue(value) : Math.round(value).toString();
+      previousValueRef.current = value;
+      return;
+    }
 
     let animationFrame = 0;
 
     const animate = (now: number) => {
       const progress = Math.min((now - startTime) / duration, 1);
       const eased = 1 - Math.pow(2, -12 * progress);
-      setDisplayValue(startValue + delta * eased);
+      const nextValue = startValue + delta * eased;
+      element.textContent = formatValue ? formatValue(nextValue) : Math.round(nextValue).toString();
 
       if (progress < 1) {
         animationFrame = window.requestAnimationFrame(animate);
+      } else {
+        previousValueRef.current = value;
       }
     };
 
@@ -48,11 +61,7 @@ const StatCard = ({
     return () => {
       window.cancelAnimationFrame(animationFrame);
     };
-  }, [value]);
-
-  const renderedValue = formatValue
-    ? formatValue(displayValue)
-    : Math.round(displayValue).toString();
+  }, [value, formatValue]);
 
   const getIconColor = () => {
     switch (colorVariant) {
@@ -81,11 +90,10 @@ const StatCard = ({
         border: "1px solid var(--border-subtle)",
         borderRadius: "var(--radius-lg)",
         padding: "var(--spacing-xl)",
-        transition: "all 0.3s ease",
+        transition: "border-color 180ms ease, background 180ms ease, transform 180ms ease, box-shadow 180ms ease",
         cursor: "default",
         position: "relative",
         overflow: "hidden",
-        backdropFilter: "blur(1px)",
       }}
       onMouseEnter={(e) => {
         (e.currentTarget as HTMLElement).style.borderColor = "var(--border-focus)";
@@ -101,6 +109,7 @@ const StatCard = ({
       }}
     >
       <div
+        ref={valueElementRef}
         style={{
           display: "flex",
           alignItems: "flex-start",
@@ -146,7 +155,7 @@ const StatCard = ({
           lineHeight: 1,
         }}
       >
-        {renderedValue}
+        {formatValue ? formatValue(previousValueRef.current) : Math.round(previousValueRef.current).toString()}
       </div>
 
       <div

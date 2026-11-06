@@ -1,21 +1,21 @@
-import { ArrowUp, CircleDollarSign, Menu, ShieldCheck, X } from "lucide-react";
-import { useState, useEffect } from "react";
+import { ArrowUp, CircleDollarSign, Menu, X } from "lucide-react";
+import { lazy, Suspense, useState, useEffect } from "react";
 
 import Sidebar from "./components/Sidebar";
 import AddTransactionModal from "./components/AddTransactionModal";
 
-import Dashboard from "./pages/Dashboard";
-import Analytics from "./pages/Analytics.tsx";
-import ProfitLoss from "./pages/ProfitLoss";
-import Settings from "./pages/Settings";
-import Login from "./pages/Login";
-import Transactions from "./pages/Transactions";
-import Withdrawals from "./pages/Withdrawals";
-import Chat from "./pages/Chat";
-import InvestmentPage from "./pages/Investment";
-import Expenses from "./pages/Expenses";
-import Reports from "./pages/Reports";
-import Profile from "./pages/Profile";
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const Analytics = lazy(() => import("./pages/Analytics"));
+const ProfitLoss = lazy(() => import("./pages/ProfitLoss"));
+const Settings = lazy(() => import("./pages/Settings"));
+const Login = lazy(() => import("./pages/Login"));
+const Transactions = lazy(() => import("./pages/Transactions"));
+const Withdrawals = lazy(() => import("./pages/Withdrawals"));
+const Chat = lazy(() => import("./pages/Chat"));
+const InvestmentPage = lazy(() => import("./pages/Investment"));
+const Expenses = lazy(() => import("./pages/Expenses"));
+const Reports = lazy(() => import("./pages/Reports"));
+const Profile = lazy(() => import("./pages/Profile"));
 
 import {
   addStorageChangeListener,
@@ -145,13 +145,15 @@ const App = () => {
 
   if (!user) {
     return (
-      <Login
-        onAuthenticated={(newUser) => {
-          setUser(newUser);
-          setActivePage("dashboard");
-          setMobileMenuOpen(false);
-        }}
-      />
+      <Suspense fallback={<div className="app-route-loading" role="status">Loading FinTrack…</div>}>
+        <Login
+          onAuthenticated={(newUser) => {
+            setUser(newUser);
+            setActivePage("dashboard");
+            setMobileMenuOpen(false);
+          }}
+        />
+      </Suspense>
     );
   }
 
@@ -294,6 +296,7 @@ const App = () => {
           {mobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
         </button>
 
+        <Suspense fallback={<div className="app-route-loading" role="status">Loading page…</div>}>
         {activePage === "dashboard" ? (
           <Dashboard
             user={user}
@@ -412,6 +415,7 @@ const App = () => {
             }}
           />
         )}
+        </Suspense>
 
       </main>
 
@@ -425,10 +429,6 @@ const App = () => {
                 <strong>FinTrack</strong>
                 <span>Trade, investment, and expense tracking in one place.</span>
               </div>
-            </div>
-            <div className="app-footer-privacy">
-              <ShieldCheck size={17} />
-              <div><strong>Your data stays on this device</strong><span>Saved locally in your browser.</span></div>
             </div>
           </div>
           <div className="app-footer-bottom">

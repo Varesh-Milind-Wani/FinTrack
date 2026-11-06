@@ -1,3 +1,5 @@
+import { useRef } from "react";
+
 interface ChartPanelProps {
   title: string;
   subtitle: string;
@@ -15,12 +17,34 @@ const ChartPanel = ({
   action,
   onClick,
 }: ChartPanelProps) => {
+  const pointerStartRef = useRef<{ x: number; y: number } | null>(null);
+  const movedPointerRef = useRef(false);
+
   return (
     <section
       className={`chart-panel ${
         onClick ? "chart-panel-clickable" : ""
       } ${className}`}
-      onClick={onClick}
+      onPointerDown={(event) => {
+        pointerStartRef.current = { x: event.clientX, y: event.clientY };
+        movedPointerRef.current = false;
+      }}
+      onPointerMove={(event) => {
+        const start = pointerStartRef.current;
+        if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 6) {
+          movedPointerRef.current = true;
+        }
+      }}
+      onPointerUp={() => {
+        pointerStartRef.current = null;
+      }}
+      onClick={() => {
+        if (movedPointerRef.current) {
+          movedPointerRef.current = false;
+          return;
+        }
+        onClick?.();
+      }}
       role={onClick ? "button" : undefined}
       tabIndex={onClick ? 0 : undefined}
       aria-label={onClick ? `${title} chart. Open full screen.` : undefined}

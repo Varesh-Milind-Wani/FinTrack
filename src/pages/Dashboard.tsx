@@ -2,10 +2,14 @@ import { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import Highcharts from "highcharts";
 import HighchartsStock from "highcharts/highstock";
 import HighchartsReact from "highcharts-react-official";
+import type { HighchartsReactRefObject } from "highcharts-react-official";
 import ReactECharts from "echarts-for-react";
 import {
   BarChart3,
+  CheckCircle2,
   Download,
+  Gauge,
+  ShieldAlert,
   TrendingDown,
   TrendingUp,
   Wallet,
@@ -16,7 +20,6 @@ import ChartPanel from "../components/ChartPanel";
 import ChartFullscreenModal from "../components/ChartFullscreenModal";
 
 import type { UserAccount } from "../types/finance";
-import { exportFinanceToExcel } from "../utils/excel";
 import { formatCurrency } from "../utils/money";
 import { calculateBalanceStats, getAuthoritativeBalance } from "../utils/balance";
 
@@ -29,6 +32,46 @@ const EChartsChart =
   (ReactECharts as unknown as {
     default?: typeof ReactECharts;
   }).default ?? ReactECharts;
+
+const chartRangeOptions = [
+  { type: "day", count: 1, label: "1 day" },
+  { type: "week", count: 1, label: "1 week" },
+  { type: "month", count: 1, label: "1 month" },
+  { type: "month", count: 3, label: "3 months" },
+  { type: "month", count: 6, label: "6 months" },
+  { type: "year", count: 1, label: "1 year" },
+  { type: "year", count: 3, label: "3 years" },
+  { type: "year", count: 5, label: "5 years" },
+  { type: "year", count: 10, label: "10 years" },
+  { type: "all", count: 0, label: "All" },
+] as const;
+
+const ChartRangeDropdown = ({
+  chartRef,
+  value,
+  onChange,
+}: {
+  chartRef: React.RefObject<HighchartsReactRefObject | null>;
+  value: number;
+  onChange: (index: number) => void;
+}) => (
+  <label className="chart-range-dropdown" onClick={(event) => event.stopPropagation()}>
+    <span>Range</span>
+    <select
+      value={value}
+      aria-label="Chart date range"
+      onChange={(event) => {
+        const index = Number(event.target.value);
+        (chartRef.current?.chart as Highcharts.Chart & { rangeSelector?: { clickButton: (buttonIndex: number) => void } }).rangeSelector?.clickButton(index);
+        onChange(index);
+      }}
+    >
+      {chartRangeOptions.map((option, index) => (
+        <option key={`${option.type}-${option.count}`} value={index}>{option.label}</option>
+      ))}
+    </select>
+  </label>
+);
 
 const formatDateKey = (date: Date) => {
   const year = date.getFullYear();
@@ -112,7 +155,8 @@ interface Props {
 const Dashboard = ({ user, onAdd }: Props) => {
   const dashboardRef = useRef<HTMLDivElement>(null);
   const [currentHour, setCurrentHour] = useState(() => new Date().getHours());
-  const [refreshKey, setRefreshKey] = useState(0);
+  const wealthChartRef = useRef<HighchartsReactRefObject>(null);
+  const [wealthRange, setWealthRange] = useState(9);
   const [fullscreenChart, setFullscreenChart] = useState<
     | {
         title: string;
@@ -127,15 +171,16 @@ const Dashboard = ({ user, onAdd }: Props) => {
   >(null);
   const closeFullscreenChart = useCallback(() => setFullscreenChart(null), []);
 
-  // Force re-render when transactions change
-  useEffect(() => {
-    setRefreshKey(prev => prev + 1);
-  }, [user.transactions.length, user.currentBalance, user.startingBalance, user.investmentIncluded, (user.investments ?? []).map(i => i.currentValue).join(','), user.transactions.map(t => `${t.id}-${t.amount}-${t.type}`).join(',')]); 
-
   useEffect(() => {
     const timer = window.setInterval(() => setCurrentHour(new Date().getHours()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    // Rebuilds start from the complete dataset, so keep the native select in
+    // sync when transactions are replaced or imported.
+    setWealthRange(9);
+  }, [user.transactions, user.createdAt]);
 
   // The sidebar collapse animates the content width without resizing the
   // browser window. Reflow Highcharts when its chart panels change size so the
@@ -174,7 +219,10 @@ const Dashboard = ({ user, onAdd }: Props) => {
     };
   }, []);
 
-  const formatMoney = (value: number) => formatCurrency(value, user.currency);
+  const formatMoney = useCallback(
+    (value: number) => formatCurrency(value, user.currency),
+    [user.currency],
+  );
 
   const stats = useMemo(() => {
     // Use authoritative balance (respects Settings manual override)
@@ -213,7 +261,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
       avgLossPerTrade,
       performancePercentage,
     };
-  }, [user.transactions, user.startingBalance, user.currentBalance, user.defaultCostAmount, user.investmentIncluded, user.investments, refreshKey]);
+  }, [user.transactions, user.startingBalance, user.currentBalance, user.defaultCostAmount, user.investmentIncluded, user.investments]);
 
   const {
     totalProfit,
@@ -228,6 +276,58 @@ const Dashboard = ({ user, onAdd }: Props) => {
     avgProfitPerTrade,
     avgLossPerTrade,
   } = stats;
+
+  const paceCoach = useMemo(() => {
+    const trades = user.transactions
+      .filter((transaction) => transaction.type === "profit" || transaction.type === "loss")
+      .slice()
+      .sort((left, right) => new Date(left.date).getTime() - new Date(right.date).getTime());
+    const recentTrades = trades.slice(-10);
+    const recentNet = recentTrades.reduce(
+      (total, trade) => total + (trade.type === "profit" ? trade.amount : -trade.amount),
+      0,
+    );
+    let consecutiveLosses = 0;
+    for (let index = trades.length - 1; index >= 0 && trades[index].type === "loss"; index -= 1) {
+      consecutiveLosses += 1;
+    }
+
+    const profitFactor = totalLoss > 0 ? totalProfit / totalLoss : totalProfit > 0 ? Infinity : 0;
+    if (trades.length < 10) {
+      return {
+        tone: "steady" as const,
+        title: "Build your sample first",
+        message: "Keep position size small until at least 10 recorded trades show a reliable pattern.",
+        detail: `${trades.length}/10 trades recorded · no size increase yet`,
+        icon: <Gauge size={19} />,
+      };
+    }
+    if (consecutiveLosses >= 3 || recentNet < 0 || winRate < 40 || profitFactor < 0.9) {
+      return {
+        tone: "warning" as const,
+        title: "Slow down and protect capital",
+        message: "Recent results are under pressure. Reduce risk per trade, pause after a loss streak, and review your setup before adding size.",
+        detail: `${consecutiveLosses} consecutive losses · recent 10 net ${formatMoney(recentNet)}`,
+        icon: <ShieldAlert size={19} />,
+      };
+    }
+    if (trades.length >= 20 && recentNet > 0 && winRate >= 55 && profitFactor >= 1.3) {
+      return {
+        tone: "positive" as const,
+        title: "Measured momentum",
+        message: "Your sample is consistently positive. If your written risk limit allows it, consider increasing size gradually by 5–10% and review again after 10 trades.",
+        detail: `${winRate.toFixed(0)}% win rate · ${profitFactor.toFixed(2)} profit factor`,
+        icon: <CheckCircle2 size={19} />,
+      };
+    }
+    return {
+      tone: "steady" as const,
+      title: "Keep your current pace",
+      message: "Results are mixed but controlled. Keep the same size and collect more data before changing your risk.",
+      detail: `${winRate.toFixed(0)}% win rate · ${trades.length} trades reviewed`,
+      icon: <Gauge size={19} />,
+    };
+  }, [formatMoney, lossCount, totalLoss, totalProfit, user.transactions, winRate]);
 
   const wealthData = useMemo(() => {
     const dailyNet: Record<string, number> = {};
@@ -285,7 +385,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
 
     const effectiveStartingBalance = currentBalance - totalProfit + totalLoss;
     return createDailySeries(startDate, endDate, dailyNet, effectiveStartingBalance, currentBalance);
-  }, [user.startingBalance, user.transactions, user.createdAt, currentBalance, refreshKey, totalProfit, totalLoss]);
+  }, [user.startingBalance, user.transactions, user.createdAt, currentBalance, totalProfit, totalLoss]);
 
   const profitLossData = useMemo(() => {
     const dailyTotals: Record<
@@ -401,7 +501,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
     }
 
     return result;
-  }, [user.createdAt, user.transactions, refreshKey]);
+  }, [user.createdAt, user.transactions]);
 
   const candlestickOptions = useMemo<Highcharts.Options>(() => {
     const transactions = [...user.transactions]
@@ -474,7 +574,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
           enabled: true,
         },
         rangeSelector: {
-          selected: 5,
+          selected: 9,
           inputEnabled: false,
           buttonSpacing: 8,
           buttonPosition: { align: "left", x: 0, y: 4 },
@@ -501,15 +601,11 @@ const Dashboard = ({ user, onAdd }: Props) => {
               },
             },
           },
-          buttons: [
-            { type: "month", count: 1, text: "1m" },
-            { type: "month", count: 3, text: "3m" },
-            { type: "month", count: 6, text: "6m" },
-            { type: "ytd", text: "YTD" },
-            { type: "year", count: 1, text: "1y" },
-            { type: "year", count: 6, text: "6Y" },
-            { type: "all", text: "All Time" },
-          ],
+          buttons: chartRangeOptions.map(({ type, count, label }) => ({
+            type,
+            ...(count ? { count } : {}),
+            text: label,
+          })),
         },
         navigator: {
           enabled: true,
@@ -599,6 +695,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
             upColor: "#36d399",
             lineColor: "#ffffff",
             upLineColor: "#ffffff",
+            states: { hover: { enabled: false } },
           },
         },
         series: [
@@ -692,7 +789,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
       subtitle: { text: undefined },
       exporting: { enabled: true },
       rangeSelector: {
-        selected: 5,
+        selected: 9,
         inputEnabled: true,
         buttonSpacing: 8,
         buttonPosition: { align: "left", x: 0, y: 4 },
@@ -723,15 +820,11 @@ const Dashboard = ({ user, onAdd }: Props) => {
           },
           style: { color: "#9aa5ba", fontWeight: "600", fontFamily: "Inter, sans-serif", fontSize: "11px" },
         },
-        buttons: [
-          { type: "month", count: 1, text: "1m" },
-          { type: "month", count: 3, text: "3m" },
-          { type: "month", count: 6, text: "6m" },
-          { type: "ytd", text: "YTD" },
-          { type: "year", count: 1, text: "1y" },
-          { type: "year", count: 5, text: "5y" },
-          { type: "all", text: "All" },
-        ],
+        buttons: chartRangeOptions.map(({ type, count, label }) => ({
+          type,
+          ...(count ? { count } : {}),
+          text: label,
+        })),
       },
       navigator: {
         enabled: true,
@@ -860,6 +953,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
           upColor: "#10b981",
           lineColor: "#ef5350",
           upLineColor: "#34d399",
+          states: { hover: { enabled: false } },
           borderRadius: 2,
           lineWidth: 1.5,
         },
@@ -885,13 +979,26 @@ const Dashboard = ({ user, onAdd }: Props) => {
     currentBalance,
     totalProfit,
     totalLoss,
-    refreshKey,
   ]);
 
   const attachChartInteraction = (chart: Highcharts.Chart) => {
+    // Charts are display-only. The panel click still opens fullscreen, but
+    // chart-level drag, wheel, and mouse listeners are intentionally disabled.
+    return;
+
     let isDragging = false;
     let dragStartX = 0, dragStartY = 0;
     let dxMin = 0, dxMax = 0, dyMin = 0, dyMax = 0;
+
+    // Highcharts can consume wheel events even when mouse-wheel zoom is off.
+    // Forward chart wheel input to the page so scrolling never gets trapped.
+    const forwardWheelToPage = (event: WheelEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest(".chart-range-dropdown")) return;
+      event.preventDefault();
+      window.scrollBy({ top: event.deltaY, left: event.deltaX, behavior: "auto" });
+    };
+    chart.container.addEventListener("wheel", forwardWheelToPage, { capture: true, passive: false });
 
     // Left-click drag → pan X and Y
     chart.container.addEventListener('mousedown', (e: MouseEvent) => {
@@ -916,6 +1023,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
       dyMin = typeof chart.yAxis[0].min === 'number' ? chart.yAxis[0].min : 0;
       dyMax = typeof chart.yAxis[0].max === 'number' ? chart.yAxis[0].max : 1;
       chart.container.style.cursor = 'grabbing';
+      chart.container.classList.add('dragging');
       e.preventDefault();
     });
 
@@ -930,13 +1038,17 @@ const Dashboard = ({ user, onAdd }: Props) => {
     document.addEventListener('mouseup', () => {
       if (!isDragging) return;
       isDragging = false;
-      chart.container.style.cursor = 'crosshair';
+      chart.container.style.cursor = 'pointer';
+      chart.container.classList.remove('dragging');
     });
 
     // Double-click → reset
     chart.container.addEventListener('dblclick', () => {
       chart.xAxis[0].setExtremes(undefined, undefined, false);
       chart.yAxis[0].setExtremes(undefined, undefined, true);
+    });
+    Highcharts.addEvent(chart, "destroy", () => {
+      chart.container.removeEventListener("wheel", forwardWheelToPage, true);
     });
   };
 
@@ -947,7 +1059,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
       backgroundColor: "transparent",
       height: 300,
       style: { fontFamily: "Inter, system-ui, sans-serif" },
-      animation: { duration: 1800, easing: "easeOutQuart" } as Highcharts.AnimationOptionsObject,
+      animation: { duration: 450, easing: "easeOutQuart" } as Highcharts.AnimationOptionsObject,
       spacing: [8, 12, 14, 12],
       borderRadius: 0,
       zoomType: undefined,
@@ -1069,11 +1181,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
           radius: 6,
           states: {
             hover: {
-              enabled: true,
-              radius: 9,
-              fillColor: "#60a5fa",
-              lineColor: "#ffffff",
-              lineWidth: 2,
+              enabled: false,
             },
           },
         },
@@ -1089,7 +1197,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
         lineWidth: 2.2,
         states: {
           hover: {
-            lineWidth: 2.8,
+            enabled: false,
           },
         },
       },
@@ -1114,7 +1222,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
 
   const profitLossTrendOption = {
     backgroundColor: "transparent",
-    animation: { duration: 1600, easing: "cubicOut" },
+    animation: { duration: 450, easing: "cubicOut" },
     title: { text: undefined },
     // TradingView-style zoom and pan functionality with better resize handling
     dataZoom: [
@@ -1158,9 +1266,11 @@ const Dashboard = ({ user, onAdd }: Props) => {
       inactiveColor: "rgba(94, 107, 128, 0.4)",
     },
     tooltip: {
+      show: false,
       trigger: "axis",
       transitionDuration: 0.12,
       axisPointer: { 
+        show: false,
         type: "cross", 
         animation: false,
         lineStyle: { color: "rgba(96,165,250,0.6)", type: "dashed", width: 1 },
@@ -1204,7 +1314,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
       boundaryGap: false,
       gridLineColor: "rgba(59, 130, 246, 0.08)",
       axisPointer: {
-        show: true,
+        show: false,
         label: {
           show: true,
           backgroundColor: "#1d4ed8",
@@ -1228,7 +1338,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
       axisLabel: { color: "#5e6b80", fontFamily: "Inter, sans-serif", fontSize: 12, fontWeight: 600, formatter: (value: number) => formatMoney(value) },
       axisLine: { lineStyle: { color: "rgba(59, 130, 246, 0.2)" } },
       axisPointer: {
-        show: true,
+        show: false,
         label: {
           show: true,
           backgroundColor: "#1d4ed8",
@@ -1260,12 +1370,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
           },
         },
         emphasis: {
-          focus: "series",
-          scale: true,
-          lineStyle: { width: 3 },
-          itemStyle: { borderColor: "#ffffff", borderWidth: 2 },
-          shadowColor: "rgba(16, 185, 129, 0.35)",
-          shadowBlur: 14,
+          disabled: true,
         },
         data: profitLossData.map((item) => [item.date, item.profit]),
       },
@@ -1288,12 +1393,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
           },
         },
         emphasis: {
-          focus: "series",
-          scale: true,
-          lineStyle: { width: 3 },
-          itemStyle: { borderColor: "#ffffff", borderWidth: 2 },
-          shadowColor: "rgba(239, 68, 68, 0.35)",
-          shadowBlur: 14,
+          disabled: true,
         },
         data: profitLossData.map((item) => [item.date, item.loss]),
       },
@@ -1342,7 +1442,10 @@ const Dashboard = ({ user, onAdd }: Props) => {
         <div className="dashboard-actions">
 
 
-          <button className="secondary-button" onClick={() => exportFinanceToExcel(user)}>
+          <button className="secondary-button" onClick={async () => {
+            const { exportFinanceToExcel } = await import("../utils/excel");
+            exportFinanceToExcel(user);
+          }}>
             <Download size={17} />
             Export Excel
           </button>
@@ -1441,6 +1544,18 @@ const Dashboard = ({ user, onAdd }: Props) => {
         />
       </div>
 
+      <section className={`trading-pace-coach ${paceCoach.tone}`} aria-live="polite">
+        <div className="trading-pace-icon" aria-hidden="true">{paceCoach.icon}</div>
+        <div className="trading-pace-content">
+          <div className="trading-pace-heading">
+            <span className="eyebrow">TRADING PACE COACH</span>
+            <strong>{paceCoach.title}</strong>
+          </div>
+          <p>{paceCoach.message}</p>
+          <span className="trading-pace-detail">{paceCoach.detail}</span>
+        </div>
+      </section>
+
       <div className="charts-two-column dashboard-chart-grid">
         <ChartPanel
           className="dashboard-overview-chart"
@@ -1457,7 +1572,9 @@ const Dashboard = ({ user, onAdd }: Props) => {
             })
           }
         >
+          <ChartRangeDropdown chartRef={wealthChartRef} value={wealthRange} onChange={setWealthRange} />
           <HighchartsStockChart
+            ref={wealthChartRef}
             highcharts={HighchartsStock}
             constructorType="stockChart"
             options={candlestickOptions}

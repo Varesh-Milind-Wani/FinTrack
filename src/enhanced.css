@@ -1360,6 +1360,29 @@ input:focus, select:focus, textarea:focus {
   }
 }
 
+/* Desktop transaction editor: keep the dialog centered and make the form
+   usable without scrolling the header off screen. */
+@media (min-width: 1101px) {
+  .transaction-modal {
+    width: min(760px, calc(100vw - 64px));
+    max-width: 760px;
+    max-height: min(90dvh, 900px);
+    overflow: hidden;
+  }
+
+  .transaction-modal .modal-form {
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .transaction-modal .modal-footer {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    background: rgba(10, 13, 22, 0.98);
+  }
+}
+
 .mobile-nav-backdrop {
   display: none;
 }
@@ -2605,8 +2628,7 @@ html::-webkit-scrollbar-thumb, body::-webkit-scrollbar-thumb {
   padding: 15px 20px;
 }
 
-.app-footer-branding,
-.app-footer-privacy {
+.app-footer-branding {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -2625,8 +2647,7 @@ html::-webkit-scrollbar-thumb, body::-webkit-scrollbar-thumb {
   color: #70aaff;
 }
 
-.app-footer-branding > div,
-.app-footer-privacy > div {
+.app-footer-branding > div {
   display: grid;
   gap: 4px;
 }
@@ -2637,25 +2658,9 @@ html::-webkit-scrollbar-thumb, body::-webkit-scrollbar-thumb {
   font-weight: 750;
 }
 
-.app-footer-branding span:not(.app-footer-mark),
-.app-footer-privacy span {
+.app-footer-branding span:not(.app-footer-mark) {
   color: var(--text-secondary, #94a3b8);
   font-size: 11px;
-}
-
-.app-footer-privacy {
-  padding: 10px 13px;
-  border: 1px solid rgba(16, 185, 129, .18);
-  border-radius: 11px;
-  background: rgba(16, 185, 129, .045);
-}
-
-.app-footer-privacy > svg { flex: 0 0 auto; color: #34d399; }
-
-.app-footer-privacy strong {
-  color: #d6e1ef;
-  font-size: 11px;
-  font-weight: 650;
 }
 
 .app-footer-bottom {
@@ -2931,11 +2936,6 @@ html::-webkit-scrollbar-thumb, body::-webkit-scrollbar-thumb {
     flex-direction: column;
     gap: 14px;
     padding: 16px;
-  }
-
-  .app-footer-privacy {
-    width: 100%;
-    box-sizing: border-box;
   }
 
   .app-footer-bottom {
@@ -3504,13 +3504,63 @@ select.filter-dropdown:focus,
   position: relative;
   transition: box-shadow 0.2s ease;
   overflow: hidden; /* Prevent layout shifts during resize */
+  cursor: pointer;
+}
+
+/* Compact native range control keeps the chart toolbar usable on narrow screens. */
+.chart-range-dropdown {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  z-index: 8;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #9aa5ba;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.chart-range-dropdown select {
+  min-width: 112px;
+  padding: 6px 26px 6px 9px;
+  color: #e8edf5;
+  background: #151922;
+  border: 1px solid #2b3340;
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.chart-container .highcharts-range-selector-group {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* Dashboard charts stay visually quiet on hover; no x/y crosshair overlays. */
+.chart-container .highcharts-crosshair,
+.chart-container .highcharts-crosshair-label,
+.chart-fullscreen-body .highcharts-crosshair,
+.chart-fullscreen-body .highcharts-crosshair-label {
+  display: none !important;
+}
+
+.chart-fullscreen-body .highcharts-range-selector-group {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.chart-fullscreen-body .chart-range-dropdown {
+  top: 14px;
+  left: 20px;
+  width: auto;
+  height: auto;
 }
 
 .chart-container:hover {
   transform: none;
-  box-shadow: 
-    0 8px 25px rgba(0, 0, 0, 0.15),
-    0 3px 10px rgba(59, 130, 246, 0.1);
+  box-shadow: none;
 }
 
 /* Ensure chart doesn't zoom out excessively on resize */
@@ -3539,16 +3589,28 @@ select.filter-dropdown:focus,
   transition: transform 0.1s ease !important;
 }
 
-/* Chart crosshair cursor on zoom-enabled charts */
+/* Keep the pointer visible over dashboard and fullscreen chart plots. */
+.chart-container,
 .chart-container canvas,
 .chart-container svg,
-.highcharts-container {
-  cursor: crosshair !important;
+.chart-container .highcharts-container,
+.chart-fullscreen-body,
+.chart-fullscreen-body canvas,
+.chart-fullscreen-body svg,
+.chart-fullscreen-body .highcharts-container,
+.chart-fullscreen-body .echarts-for-react {
+  cursor: default !important;
+}
+
+.chart-panel-clickable,
+.chart-panel-clickable:hover {
+  cursor: default;
 }
 
 .highcharts-container.dragging,
 .chart-container.panning canvas,
-.chart-container.panning svg {
+.chart-container.panning svg,
+.chart-fullscreen-body .highcharts-container.dragging {
   cursor: grabbing !important;
 }
 
@@ -3631,6 +3693,9 @@ select.filter-dropdown:focus,
 
 .chart-fullscreen-body {
   display: block;
+  position: relative;
+  flex: 1 1 0;
+  height: 0;
   min-height: 0;
   padding: 0;
   overflow: hidden;
@@ -3646,6 +3711,48 @@ select.filter-dropdown:focus,
 .chart-fullscreen-body .highcharts-container svg {
   display: block;
 }
+
+/* Trading Pace Coach */
+.trading-pace-coach {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin: 18px 0 22px;
+  padding: 16px 18px;
+  border: 1px solid rgba(79, 143, 255, .22);
+  border-radius: 16px;
+  background: linear-gradient(120deg, rgba(79, 143, 255, .09), rgba(10, 14, 24, .72));
+}
+
+.trading-pace-coach.warning {
+  border-color: rgba(245, 166, 35, .28);
+  background: linear-gradient(120deg, rgba(245, 166, 35, .09), rgba(10, 14, 24, .72));
+}
+
+.trading-pace-coach.positive {
+  border-color: rgba(0, 229, 160, .25);
+  background: linear-gradient(120deg, rgba(0, 229, 160, .08), rgba(10, 14, 24, .72));
+}
+
+.trading-pace-icon {
+  display: grid;
+  flex: 0 0 38px;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  color: #73a7ff;
+  border: 1px solid rgba(79, 143, 255, .28);
+  border-radius: 12px;
+  background: rgba(79, 143, 255, .12);
+}
+
+.trading-pace-coach.warning .trading-pace-icon { color: #f5b84b; border-color: rgba(245, 166, 35, .3); background: rgba(245, 166, 35, .12); }
+.trading-pace-coach.positive .trading-pace-icon { color: #27dfa4; border-color: rgba(0, 229, 160, .3); background: rgba(0, 229, 160, .11); }
+.trading-pace-content { min-width: 0; }
+.trading-pace-heading { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.trading-pace-heading strong { color: var(--text); font-size: 14px; }
+.trading-pace-content p { max-width: 850px; margin: 5px 0 7px; color: var(--text-2); font-size: 12px; line-height: 1.5; }
+.trading-pace-detail { color: var(--text-3); font-size: 10px; }
 
 .dashboard-overview-chart {
   display: flex;
@@ -4478,6 +4585,15 @@ select.filter-dropdown:focus,
 
 @media (prefers-reduced-motion: reduce) {
   .dashboard-live-indicator i { animation: none; }
+}
+
+/* Keep route code-splits visually stable while the selected page is fetched. */
+.app-route-loading {
+  display: grid;
+  min-height: 50vh;
+  place-items: center;
+  color: var(--text-secondary, #9aa5ba);
+  font-size: 14px;
 }
 
 .cashflow-card,

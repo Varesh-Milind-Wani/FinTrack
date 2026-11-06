@@ -4,6 +4,7 @@ import { ChartCandlestick, LineChart, X } from "lucide-react";
 import Highcharts from "highcharts";
 import HighchartsStock from "highcharts/highstock";
 import HighchartsReact from "highcharts-react-official";
+import type { HighchartsReactRefObject } from "highcharts-react-official";
 import ReactECharts from "echarts-for-react";
 
 const HighchartsChart =
@@ -15,6 +16,74 @@ const EChartsChart =
   (ReactECharts as unknown as {
     default?: typeof ReactECharts;
   }).default ?? ReactECharts;
+
+const chartRangeOptions = [
+  { type: "day", count: 1, label: "1 day" },
+  { type: "week", count: 1, label: "1 week" },
+  { type: "month", count: 1, label: "1 month" },
+  { type: "month", count: 3, label: "3 months" },
+  { type: "month", count: 6, label: "6 months" },
+  { type: "year", count: 1, label: "1 year" },
+  { type: "year", count: 3, label: "3 years" },
+  { type: "year", count: 5, label: "5 years" },
+  { type: "year", count: 10, label: "10 years" },
+  { type: "all", count: 0, label: "All" },
+] as const;
+
+const applyChartRange = (chart: Highcharts.Chart | undefined, index: number) => {
+  if (!chart) return;
+
+  const stockRangeSelector = (chart as Highcharts.Chart & {
+    rangeSelector?: { clickButton: (buttonIndex: number) => void };
+  }).rangeSelector;
+  if (stockRangeSelector) {
+    stockRangeSelector.clickButton(index);
+    return;
+  }
+
+  const axis = chart.xAxis[0] as (Highcharts.Axis & { dataMin?: number; dataMax?: number }) | undefined;
+  if (!axis || typeof axis.dataMin !== "number" || typeof axis.dataMax !== "number") return;
+
+  const range = chartRangeOptions[index];
+  if (!range || range.type === "all") {
+    axis.setExtremes(undefined, undefined);
+    return;
+  }
+
+  const max = axis.dataMax;
+  const minDate = new Date(max);
+  if (range.type === "day") minDate.setDate(minDate.getDate() - range.count);
+  if (range.type === "week") minDate.setDate(minDate.getDate() - range.count * 7);
+  if (range.type === "month") minDate.setMonth(minDate.getMonth() - range.count);
+  if (range.type === "year") minDate.setFullYear(minDate.getFullYear() - range.count);
+  axis.setExtremes(Math.max(axis.dataMin, minDate.getTime()), max);
+};
+
+const getEchartsRangeStart = (option: Record<string, unknown>, index: number) => {
+  const range = chartRangeOptions[index];
+  if (!range || range.type === "all") return 0;
+
+  const series = Array.isArray(option.series) ? option.series : [];
+  const values = series.flatMap((entry) => {
+    const data = entry && typeof entry === "object" && "data" in entry
+      ? (entry as { data?: unknown }).data
+      : undefined;
+    return Array.isArray(data) ? data : [];
+  }).map((point) => {
+    const value = Array.isArray(point) ? point[0] : point;
+    const timestamp = value instanceof Date ? value.getTime() : new Date(String(value)).getTime();
+    return Number.isFinite(timestamp) ? timestamp : null;
+  }).filter((value): value is number => value !== null).sort((a, b) => a - b);
+
+  if (values.length < 2) return 0;
+  const max = values[values.length - 1];
+  const min = new Date(max);
+  if (range.type === "day") min.setDate(min.getDate() - range.count);
+  if (range.type === "week") min.setDate(min.getDate() - range.count * 7);
+  if (range.type === "month") min.setMonth(min.getMonth() - range.count);
+  if (range.type === "year") min.setFullYear(min.getFullYear() - range.count);
+  return Math.max(0, Math.min(100, ((min.getTime() - values[0]) / (max - values[0])) * 100));
+};
 
 type ChartKind = "highcharts" | "stock" | "echarts";
 type ChartMode = "classic" | "candlestick";
@@ -43,6 +112,8 @@ const ChartFullscreenModal = ({
   onClose,
 }: Props) => {
   const restorePageRef = useRef<(() => void) | null>(null);
+  const chartRef = useRef<HighchartsReactRefObject>(null);
+  const [rangeSelection, setRangeSelection] = useState(9);
   const [chartMode, setChartMode] =
     useState<ChartMode>(defaultChartMode);
   const closeModal = useCallback(() => {
@@ -54,8 +125,13 @@ const ChartFullscreenModal = ({
   useEffect(() => {
     if (open) {
       setChartMode(defaultChartMode);
+      setRangeSelection(9);
     }
   }, [defaultChartMode, open, title]);
+
+  useEffect(() => {
+    setRangeSelection(9);
+  }, [chartMode]);
 
   const fullscreenHighchartsOptions = useMemo(() => {
     const selectedOptions =
@@ -88,12 +164,49 @@ const ChartFullscreenModal = ({
         ? shiftCandlestickAxisLabels(selectedOptions.yAxis)
         : undefined;
 
+    const fitFullscreenChart = (chart: Highcharts.Chart) => {
+      const chartBody = chart.container.parentElement;
+      if (!chartBody) return;
+
+      const resizeChart = () => {
+        const height = chartBody.clientHeight;
+        if (height > 0 && chart.chartHeight !== height) {
+          chart.setSize(undefined, height, false);
+        }
+      };
+
+      if (typeof ResizeObserver !== "undefined") {
+        const observer = new ResizeObserver(resizeChart);
+        observer.observe(chartBody);
+        resizeChart();
+        Highcharts.addEvent(chart, "destroy", () => observer.disconnect());
+      } else {
+        resizeChart();
+      }
+    };
+
     // Shared drag-pan handler for fullscreen charts; wheel scrolling stays available.
     const attachInteraction = (chart: Highcharts.Chart) => {
+      // Charts are display-only: leave pointer, wheel, and drag events to the page.
+      return;
+
       const listeners = new AbortController();
       let isDragging = false;
       let dragStartX = 0, dragStartY = 0;
       let dxMin = 0, dxMax = 0, dyMin = 0, dyMax = 0;
+
+      // Keep page scrolling available while the pointer is over the plot.
+      const forwardWheelToPage = (event: WheelEvent) => {
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest(".chart-range-dropdown")) return;
+        event.preventDefault();
+        window.scrollBy({ top: event.deltaY, left: event.deltaX, behavior: "auto" });
+      };
+      chart.container.addEventListener("wheel", forwardWheelToPage, {
+        capture: true,
+        passive: false,
+        signal: listeners.signal,
+      });
 
       chart.container.addEventListener('mousedown', (e: MouseEvent) => {
         if (e.button !== 0) return;
@@ -116,6 +229,7 @@ const ChartFullscreenModal = ({
         dyMin = typeof chart.yAxis[0].min === 'number' ? chart.yAxis[0].min : 0;
         dyMax = typeof chart.yAxis[0].max === 'number' ? chart.yAxis[0].max : 1;
         chart.container.style.cursor = 'grabbing';
+        chart.container.classList.add('dragging');
         e.preventDefault();
       }, { signal: listeners.signal });
       document.addEventListener('mousemove', (e: MouseEvent) => {
@@ -128,7 +242,8 @@ const ChartFullscreenModal = ({
       document.addEventListener('mouseup', () => {
         if (!isDragging) return;
         isDragging = false;
-        chart.container.style.cursor = 'crosshair';
+        chart.container.style.cursor = 'pointer';
+        chart.container.classList.remove('dragging');
       }, { signal: listeners.signal });
       chart.container.addEventListener('dblclick', () => {
         chart.xAxis[0].setExtremes(undefined, undefined, false);
@@ -139,13 +254,13 @@ const ChartFullscreenModal = ({
       const chartBody = chart.container.parentElement;
       if (chartBody && typeof ResizeObserver !== "undefined") {
         const fitChartToBody = () => {
-          const height = chartBody.clientHeight;
+          const height = chartBody!.clientHeight;
           if (height > 0 && chart.chartHeight !== height) {
             chart.setSize(undefined, height, false);
           }
         };
         const observer = new ResizeObserver(fitChartToBody);
-        observer.observe(chartBody);
+        observer.observe(chartBody!);
         fitChartToBody();
         listeners.signal.addEventListener("abort", () => observer.disconnect(), { once: true });
       }
@@ -206,6 +321,8 @@ const ChartFullscreenModal = ({
       chart.container.addEventListener("mouseleave", hideLabel);
     };
 
+    void attachClassicValueLabel;
+
     return {
       ...selectedOptions,
       chart: {
@@ -223,10 +340,9 @@ const ChartFullscreenModal = ({
         events: {
           ...selectedOptions.chart?.events,
           load: function(this: Highcharts.Chart) {
+            fitFullscreenChart(this);
             attachInteraction(this);
-            if (chartMode === "classic") {
-              attachClassicValueLabel(this);
-            } else {
+            if (chartMode === "candlestick") {
               const candleSeries = this.series.find((series) => series.type === "candlestick");
               candleSeries?.points.forEach((point, index) => {
                 const candleGraphic = point.graphic?.element;
@@ -282,13 +398,15 @@ const ChartFullscreenModal = ({
         {
           type: "inside",
           xAxisIndex: 0,
+          start: getEchartsRangeStart(echartsOption, rangeSelection),
+          end: 100,
           zoomOnMouseWheel: false,
           moveOnMouseMove: false,
           moveOnMouseWheel: false,
         },
       ],
     };
-  }, [echartsOption]);
+  }, [echartsOption, rangeSelection]);
 
   useEffect(() => {
     if (!open) {
@@ -388,8 +506,29 @@ const ChartFullscreenModal = ({
         </div>
 
         <div className="chart-fullscreen-body">
+          {(fullscreenHighchartsOptions || fullscreenEchartsOption) && (
+            <label className="chart-range-dropdown">
+              <span>Range</span>
+              <select
+                value={rangeSelection}
+                aria-label="Chart date range"
+                onChange={(event) => {
+                  const index = Number(event.target.value);
+                  if (fullscreenHighchartsOptions) {
+                    applyChartRange(chartRef.current?.chart, index);
+                  }
+                  setRangeSelection(index);
+                }}
+              >
+                {chartRangeOptions.map((option, index) => (
+                  <option key={`${option.type}-${option.count}`} value={index}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+          )}
           {chartMode === "classic" && fullscreenHighchartsOptions ? (
             <HighchartsChart
+              ref={chartRef}
               key="fullscreen-classic-chart"
               highcharts={Highcharts}
               constructorType="chart"
@@ -405,6 +544,7 @@ const ChartFullscreenModal = ({
           ) : chartMode === "candlestick" && fullscreenHighchartsOptions ? (
             <HighchartsChart
               key="fullscreen-candlestick-chart"
+              ref={chartRef}
               highcharts={
                 chartMode === "candlestick"
                   ? HighchartsStock
