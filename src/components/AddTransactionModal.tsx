@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
   ArrowDownRight,
@@ -15,6 +15,7 @@ import type {
   TransactionType,
 } from "../types/finance";
 import { formatCurrency } from "../utils/money";
+import { getTransactionDateValidationError } from "../utils/tradingDates";
 
 interface Props {
   onClose: () => void;
@@ -61,48 +62,53 @@ const AddTransactionModal = ({
     ? new Date(initialTransaction.date)
     : new Date();
 
-  const [profitAmount, setProfitAmount] = useState<number>(
+  const [profitAmount, setProfitAmount] = useState(
     initialTransaction?.type === "profit"
-      ? initialTransaction.grossAmount ?? initialTransaction.amount
-      : 0
+      ? String(initialTransaction.grossAmount ?? initialTransaction.amount)
+      : ""
   );
-  const [lossAmount, setLossAmount] = useState<number>(
+  const [lossAmount, setLossAmount] = useState(
     initialTransaction?.type === "loss"
-      ? initialTransaction.grossAmount ?? initialTransaction.amount
-      : 0
+      ? String(initialTransaction.grossAmount ?? initialTransaction.amount)
+      : ""
   );
   const [entryPrice, setEntryPrice] = useState(initialTransaction?.entryPrice?.toString() ?? "");
   const [exitPrice, setExitPrice] = useState(initialTransaction?.exitPrice?.toString() ?? "");
   const [quantity, setQuantity] = useState(initialTransaction?.quantity?.toString() ?? "");
+  const [plannedRiskAmount, setPlannedRiskAmount] = useState(initialTransaction?.plannedRiskAmount?.toString() ?? "");
+  const [optionType, setOptionType] = useState<"" | "CE" | "PE">(initialTransaction?.optionType ?? "");
 
   const handleProfitChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = Number(e.target.value);
-    setProfitAmount(val);
-    if (val > 0) setLossAmount(0);
+    const value = e.target.value;
+    setProfitAmount(value);
+    if (Number(value) > 0) setLossAmount("");
   };
 
   const handleLossChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = Number(e.target.value);
-    setLossAmount(val);
-    if (val > 0) setProfitAmount(0);
+    const value = e.target.value;
+    setLossAmount(value);
+    if (Number(value) > 0) setProfitAmount("");
   };
 
   const entry = Number(entryPrice);
   const exit = Number(exitPrice);
   const units = Number(quantity);
+  const plannedRisk = Number(plannedRiskAmount);
+  const enteredProfit = Number(profitAmount) || 0;
+  const enteredLoss = Number(lossAmount) || 0;
   const hasCalculatedPnl = entryPrice !== "" && exitPrice !== "" && quantity !== "" && units > 0;
   const calculatedPnl = hasCalculatedPnl ? (exit - entry) * units : 0;
   const investedMoney = entryPrice !== "" && quantity !== "" && units > 0 ? entry * units : 0;
   const exitedMoney = exitPrice !== "" && quantity !== "" && units > 0 ? exit * units : 0;
   const currentType: TransactionType = hasCalculatedPnl
     ? calculatedPnl < 0 ? "loss" : "profit"
-    : lossAmount > 0 && profitAmount === 0 ? "loss" : "profit";
-  const activeAmount = hasCalculatedPnl ? Math.abs(calculatedPnl) : profitAmount || lossAmount;
+    : enteredLoss > 0 && enteredProfit === 0 ? "loss" : "profit";
+  const activeAmount = hasCalculatedPnl ? Math.abs(calculatedPnl) : enteredProfit || enteredLoss;
 
   const [category, setCategory] = useState(
     initialTransaction?.category ?? "Business Trade"
   );
-  const [note, setNote] = useState(initialTransaction?.note ?? "");
+  const noteRef = useRef(initialTransaction?.note ?? "");
   const [expenseIncluded, setExpenseIncluded] = useState(
     initialTransaction
       ? (initialTransaction.costAmount ?? 0) > 0
@@ -111,20 +117,30 @@ const AddTransactionModal = ({
   const [dateTime, setDateTime] = useState(() =>
     toLocalDateTimeValue(initialDate)
   );
+  const [dateError, setDateError] = useState(() => getTransactionDateValidationError(toLocalDateTimeValue(initialDate)) ?? "");
   
   // New confidence level states (always active, no checkbox)
   const [confidenceLevel, setConfidenceLevel] = useState(
     initialTransaction?.confidenceLevel ?? 50
   );
 
-  const scheduledCost = isEditing
-    ? initialTransaction?.costAmount ?? 0
-    : getScheduledCost(dateTime, defaultCostSchedules, defaultCostAmount);
+  const scheduledCost = useMemo(
+    () => isEditing
+      ? initialTransaction?.costAmount ?? 0
+      : getScheduledCost(dateTime, defaultCostSchedules, defaultCostAmount),
+    [dateTime, defaultCostAmount, defaultCostSchedules, initialTransaction, isEditing]
+  );
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
 
     const selectedDate = new Date(dateTime);
+    const transactionDateError = getTransactionDateValidationError(dateTime);
+    if (transactionDateError) {
+      setDateError(transactionDateError);
+      return;
+    }
+    setDateError("");
     if ((!activeAmount && !hasCalculatedPnl) || Number.isNaN(selectedDate.getTime())) return;
 
     // A saved transaction keeps the cost it was created with. Cost schedule
@@ -135,21 +151,24 @@ const AddTransactionModal = ({
         ? getScheduledCost(dateTime, defaultCostSchedules, defaultCostAmount)
         : 0;
 
-    const netAmount = currentType === "profit"
-      ? Math.max(0, activeAmount - appliedCost)
-      : activeAmount + appliedCost;
+    const grossSigned = currentType === "profit" ? activeAmount : -activeAmount;
+    const netSigned = grossSigned - appliedCost;
+    const netType: TransactionType = netSigned < 0 ? "loss" : "profit";
 
     const transaction: Transaction = {
+      ...(initialTransaction ?? {}),
       id: initialTransaction?.id ?? crypto.randomUUID(),
       date: selectedDate.toISOString(),
-      type: currentType,
-      amount: netAmount,
+      type: netType,
+      amount: Math.abs(netSigned),
       grossAmount: activeAmount,
       costAmount: appliedCost,
       price: activeAmount,
-      ...(hasCalculatedPnl ? { entryPrice: entry, exitPrice: exit, quantity: units } : {}),
+      ...(hasCalculatedPnl ? { entryPrice: entry, exitPrice: exit, quantity: units, positionSide: initialTransaction?.positionSide ?? "long" as const } : {}),
+      plannedRiskAmount: plannedRiskAmount.trim() && Number.isFinite(plannedRisk) && plannedRisk > 0 ? plannedRisk : undefined,
+      ...(optionType ? { optionType } : {}),
       category,
-      note: note.trim() || (currentType === "profit" ? "Profit Trade" : "Loss Trade"),
+      note: noteRef.current.trim() || (currentType === "profit" ? "Profit Trade" : "Loss Trade"),
       confidenceLevel: confidenceLevel,
     };
 
@@ -158,7 +177,7 @@ const AddTransactionModal = ({
 
   return (
     <div
-      className="modal-overlay"
+      className="modal-overlay transaction-modal-overlay"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
           onClose();
@@ -229,9 +248,16 @@ const AddTransactionModal = ({
                 className="transaction-date-input"
                 type="datetime-local"
                 value={dateTime}
-                onChange={(event) => setDateTime(event.target.value)}
+                onChange={(event) => {
+                  const nextDateTime = event.target.value;
+                  setDateTime(nextDateTime);
+                  setDateError(nextDateTime ? getTransactionDateValidationError(nextDateTime) ?? "" : "");
+                }}
+                aria-invalid={Boolean(dateError)}
+                aria-describedby={dateError ? "tx-datetime-error" : undefined}
                 required
               />
+              {dateError && <span id="tx-datetime-error" className="transaction-date-error" role="alert">{dateError}</span>}
             </div>
 
             <div className="form-section-divider" style={{ gridColumn: "1 / -1", height: "1px", background: "rgba(59,130,246,0.1)", margin: "8px 0" }}></div>
@@ -250,6 +276,15 @@ const AddTransactionModal = ({
                 <div className="form-group">
                   <label htmlFor="tx-quantity"><span className="field-label-text">Quantity</span></label>
                   <input id="tx-quantity" type="number" min="0" step="any" value={quantity} onChange={(event) => setQuantity(event.target.value)} />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="tx-planned-risk"><span className="field-label-text">Planned risk (optional)</span></label>
+                  <div className="input-with-prefix"><span className="prefix">{currency}</span><input id="tx-planned-risk" type="number" min="0" step="0.01" value={plannedRiskAmount} onChange={(event) => setPlannedRiskAmount(event.target.value)} aria-describedby="tx-planned-risk-hint" /></div>
+                  <span id="tx-planned-risk-hint" className="field-hint">Amount you planned to lose if your risk limit was hit. Used for R-multiple analysis.</span>
+                </div>
+                <div className="form-group">
+                  <label htmlFor="tx-option-type"><span className="field-label-text">Option type</span></label>
+                  <select id="tx-option-type" value={optionType} onChange={(event) => setOptionType(event.target.value as "" | "CE" | "PE")}><option value="">Not applicable / unknown</option><option value="CE">CE</option><option value="PE">PE</option></select>
                 </div>
                 <div className="form-group">
                   <label htmlFor="tx-invested-money"><span className="field-label-text">Invested Money</span></label>
@@ -273,7 +308,7 @@ const AddTransactionModal = ({
                       type="number"
                       min="0"
                       step="0.01"
-                      value={hasCalculatedPnl ? currentType === "profit" ? activeAmount : "" : profitAmount || ""}
+                      value={hasCalculatedPnl ? currentType === "profit" ? activeAmount : "" : profitAmount}
                       disabled={hasCalculatedPnl}
                       onChange={handleProfitChange}
                     />
@@ -293,7 +328,7 @@ const AddTransactionModal = ({
                       type="number"
                       min="0"
                       step="0.01"
-                      value={hasCalculatedPnl ? currentType === "loss" ? activeAmount : "" : lossAmount || ""}
+                      value={hasCalculatedPnl ? currentType === "loss" ? activeAmount : "" : lossAmount}
                       disabled={hasCalculatedPnl}
                       onChange={handleLossChange}
                     />
@@ -336,8 +371,8 @@ const AddTransactionModal = ({
               </label>
               <input
                 id="tx-note"
-                value={note}
-                onChange={(event) => setNote(event.target.value)}
+                defaultValue={noteRef.current}
+                onChange={(event) => { noteRef.current = event.target.value; }}
                 placeholder="e.g. Took BankNifty CE trade on 15m breakout"
               />
             </div>
@@ -364,14 +399,12 @@ const AddTransactionModal = ({
                   value={confidenceLevel}
                   onChange={(event) => setConfidenceLevel(Number(event.target.value))}
                   className="enhanced-confidence-slider"
+                  aria-label="Trade decision confidence"
                 />
                 <div className="slider-track-labels">
-                  <span className="track-label low">Low Confidence</span>
-                  <span className="track-label medium">Moderate</span>
-                  <span className="track-label high">High Confidence</span>
-                </div>
-                <div className="confidence-indicator">
-                  <div className="confidence-bar" style={{ width: `${confidenceLevel}%` }}></div>
+                  <span className="track-label low">Low</span>
+                  <span className="track-label medium">Medium</span>
+                  <span className="track-label high">High</span>
                 </div>
               </div>
             </div>

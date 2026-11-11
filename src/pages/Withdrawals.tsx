@@ -3,9 +3,12 @@ import {
   Calendar,
   Check,
   CreditCard,
+  ChevronLeft,
+  ChevronRight,
   DollarSign,
   Eye,
   IndianRupee,
+  Pencil,
   Plus,
   Search,
   Trash2,
@@ -15,28 +18,39 @@ import {
 import type { UserAccount, Withdrawal } from "../types/finance";
 import { formatCurrency } from "../utils/money";
 import { getInvestmentProceeds } from "../utils/balance";
+import { usePersistentState } from "../hooks/usePersistentState";
+import { useAppDialog } from "../components/AppDialog";
 
 interface Props {
   user: UserAccount;
   onSave: (updatedUser: UserAccount) => void;
 }
 
+const PAGE_SIZE = 20;
+const EMPTY_WITHDRAWALS: Withdrawal[] = [];
+
 const Withdrawals = ({ user, onSave }: Props) => {
+  const { confirm } = useAppDialog();
   const [showModal, setShowModal] = useState(false);
-  const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<"all" | "completed" | "pending" | "cancelled">("all");
+  const [editingWithdrawal, setEditingWithdrawal] = useState<Withdrawal | null>(null);
+  const [search, setSearch] = usePersistentState("withdrawals.search", "");
+  const [filter, setFilter] = usePersistentState<"all" | "completed" | "pending" | "cancelled">("withdrawals.status", "all");
+  const [currentPage, setCurrentPage] = useState(1);
 
   const [amount, setAmount] = useState("");
-  const [method, setMethod] = useState<"bank" | "crypto" | "cash" | "other">("bank");
+  const [method, setMethod] = useState<Withdrawal["method"]>("bank");
   const [note, setNote] = useState("");
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [withdrawalStatus, setWithdrawalStatus] = useState<Withdrawal["status"]>("completed");
   const [status, setStatus] = useState<string | null>(null);
 
-  const withdrawals = useMemo(() => user.withdrawals ?? [], [user.withdrawals]);
-  const displayedWithdrawals = useMemo(() => {
-    // Investment sale entries are generated when positions close and represent
-    // available proceeds, not withdrawals the user recorded on this page.
-    return withdrawals.filter((entry) => entry.method !== "investment");
-  }, [withdrawals]);
+  const withdrawals = user.withdrawals ?? EMPTY_WITHDRAWALS;
+  const displayedWithdrawals = useMemo(() => withdrawals.filter((entry) => {
+    if (entry.method !== "investment" || !entry.sourceInvestmentId) return true;
+    return user.investments?.some((investment) =>
+      investment.id === entry.sourceInvestmentId && investment.isClosed && investment.withdrawalRecorded
+    ) ?? false;
+  }), [withdrawals, user.investments]);
 
   const filteredWithdrawals = useMemo(() => {
     return displayedWithdrawals
@@ -51,10 +65,18 @@ const Withdrawals = ({ user, onSave }: Props) => {
       })
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [displayedWithdrawals, search, filter]);
+  const pageCount = Math.max(1, Math.ceil(filteredWithdrawals.length / PAGE_SIZE));
+  const visiblePage = Math.min(currentPage, pageCount);
+  const pageWithdrawals = useMemo(() => filteredWithdrawals.slice((visiblePage - 1) * PAGE_SIZE, visiblePage * PAGE_SIZE), [filteredWithdrawals, visiblePage]);
+
+  const completedWithdrawals = useMemo(
+    () => displayedWithdrawals.filter((withdrawal) => withdrawal.status === "completed"),
+    [displayedWithdrawals]
+  );
 
   const totalWithdrawn = useMemo(
-    () => withdrawals.filter((w) => w.status === "completed" && w.method !== "investment").reduce((sum, w) => sum + w.amount, 0),
-    [withdrawals]
+    () => completedWithdrawals.reduce((sum, withdrawal) => sum + Math.abs(withdrawal.amount), 0),
+    [completedWithdrawals]
   );
 
   const pendingWithdrawals = useMemo(
@@ -67,12 +89,39 @@ const Withdrawals = ({ user, onSave }: Props) => {
     [user.investments, user.withdrawals]
   );
 
+  const totalAmountInvested = useMemo(
+    () => user.investments?.reduce((total, investment) => total + investment.amount, 0) ?? 0,
+    [user.investments]
+  );
+
   const availableBalance = useMemo(() => {
     const currentBalance = user.currentBalance ?? user.startingBalance;
     return Math.max(0, currentBalance + investmentProceeds - pendingWithdrawals);
   }, [user.currentBalance, user.startingBalance, investmentProceeds, pendingWithdrawals]);
 
-  const handleAddWithdrawal = (e: React.FormEvent) => {
+  const openAddWithdrawal = () => {
+    setEditingWithdrawal(null);
+    setAmount("");
+    setMethod("bank");
+    setNote("");
+    setDate(new Date().toISOString().slice(0, 10));
+    setWithdrawalStatus("completed");
+    setStatus(null);
+    setShowModal(true);
+  };
+
+  const openEditWithdrawal = (withdrawal: Withdrawal) => {
+    setEditingWithdrawal(withdrawal);
+    setAmount(String(withdrawal.amount));
+    setMethod(withdrawal.method);
+    setNote(withdrawal.note);
+    setDate(withdrawal.date.slice(0, 10));
+    setWithdrawalStatus(withdrawal.status);
+    setStatus(null);
+    setShowModal(true);
+  };
+
+  const handleSaveWithdrawal = (e: React.FormEvent) => {
     e.preventDefault();
 
     const withdrawalAmount = Number(amount);
@@ -82,49 +131,86 @@ const Withdrawals = ({ user, onSave }: Props) => {
       return;
     }
 
-    if (withdrawalAmount > availableBalance) {
+    if (!editingWithdrawal && method !== "investment" && withdrawalStatus === "completed" && withdrawalAmount > availableBalance) {
       setStatus(`Insufficient balance. Available: ${formatCurrency(availableBalance, user.currency)}`);
       return;
     }
 
-    const newWithdrawal: Withdrawal = {
+    const newWithdrawal: Withdrawal = editingWithdrawal ? {
+      ...editingWithdrawal,
+      date: `${date}T12:00:00`,
+      amount: withdrawalAmount,
+      method: editingWithdrawal.method === "investment" ? "investment" : method,
+      note: note.trim() || "Withdrawal",
+      status: editingWithdrawal.method === "investment" ? "completed" : withdrawalStatus,
+    } : {
       id: crypto.randomUUID(),
-      date: new Date().toISOString(),
+      date: `${date}T12:00:00`,
       amount: withdrawalAmount,
       method,
       note: note.trim() || "Withdrawal",
-      status: "completed",
+      status: withdrawalStatus,
     };
+
+    const oldBalanceImpact = editingWithdrawal && editingWithdrawal.method !== "investment" && editingWithdrawal.status === "completed"
+      ? editingWithdrawal.amount : 0;
+    const newBalanceImpact = newWithdrawal.method !== "investment" && newWithdrawal.status === "completed"
+      ? newWithdrawal.amount : 0;
+    const nextInvestments = editingWithdrawal?.method === "investment" && editingWithdrawal.sourceInvestmentId
+      ? (user.investments ?? []).map((investment) => investment.id === editingWithdrawal.sourceInvestmentId
+        ? {
+          ...investment,
+          currentValue: withdrawalAmount,
+          exitPrice: withdrawalAmount / (investment.quantity || 1),
+          directPnl: investment.directPnl != null ? withdrawalAmount - investment.amount : investment.directPnl,
+          withdrawalRecorded: true,
+        }
+        : investment)
+      : user.investments;
 
     const updatedUser: UserAccount = {
       ...user,
-      withdrawals: [newWithdrawal, ...withdrawals],
-      currentBalance: user.currentBalance != null ? user.currentBalance - withdrawalAmount : undefined,
+      withdrawals: editingWithdrawal
+        ? withdrawals.map((entry) => entry.id === editingWithdrawal.id ? newWithdrawal : entry)
+        : [newWithdrawal, ...withdrawals],
+      investments: nextInvestments,
+      currentBalance: user.currentBalance != null ? user.currentBalance + oldBalanceImpact - newBalanceImpact : undefined,
     };
 
     onSave(updatedUser);
     setAmount("");
     setNote("");
     setMethod("bank");
-    setStatus("Withdrawal recorded successfully!");
+    setEditingWithdrawal(null);
+    setStatus(editingWithdrawal ? "Withdrawal updated successfully!" : "Withdrawal recorded successfully!");
     setShowModal(false);
+    setCurrentPage(1);
 
     setTimeout(() => setStatus(null), 3000);
   };
 
-  const handleDeleteWithdrawal = (id: string) => {
-    if (!window.confirm("Are you sure you want to delete this withdrawal record?")) return;
+  const handleDeleteWithdrawal = async (id: string) => {
+    if (!await confirm("Are you sure you want to delete this withdrawal record?", "Delete withdrawal")) return;
 
     const withdrawal = withdrawals.find((w) => w.id === id);
     if (!withdrawal) return;
 
+    const deletedInvestmentId = withdrawal.sourceInvestmentId;
     const updatedUser: UserAccount = {
       ...user,
       withdrawals: withdrawals.filter((w) => w.id !== id),
-      currentBalance: user.currentBalance != null ? user.currentBalance + withdrawal.amount : undefined,
+      investments: withdrawal.method === "investment" && deletedInvestmentId
+        ? (user.investments ?? []).map((investment) => investment.id === deletedInvestmentId
+          ? { ...investment, withdrawalRecorded: false }
+          : investment)
+        : user.investments,
+      currentBalance: user.currentBalance != null
+        ? user.currentBalance + (withdrawal.method !== "investment" && withdrawal.status === "completed" ? withdrawal.amount : 0)
+        : undefined,
     };
 
     onSave(updatedUser);
+    setCurrentPage(1);
   };
 
   const getMethodColor = (method: string) => {
@@ -165,7 +251,7 @@ const Withdrawals = ({ user, onSave }: Props) => {
         </div>
         <button
           className="primary-button"
-          onClick={() => setShowModal(true)}
+          onClick={openAddWithdrawal}
           style={{ display: "flex", alignItems: "center", gap: 8 }}
         >
           <Plus size={18} /> Record Withdrawal
@@ -190,38 +276,20 @@ const Withdrawals = ({ user, onSave }: Props) => {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16, marginBottom: 32 }}>
         <div
           style={{
-            background: "linear-gradient(135deg, rgba(52, 211, 153, 0.1), rgba(0, 229, 160, 0.05))",
-            border: "1px solid rgba(0, 229, 160, 0.2)",
+            background: "linear-gradient(135deg, rgba(79, 143, 255, 0.12), rgba(79, 143, 255, 0.045))",
+            border: "1px solid rgba(79, 143, 255, 0.28)",
             borderRadius: 12,
             padding: 20,
           }}
         >
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
-            <span style={{ fontSize: 12, color: "#5e6b80", fontWeight: 600, textTransform: "uppercase" }}>Available Balance</span>
-            <DollarSign size={18} color="#34d399" />
+            <span style={{ fontSize: 12, color: "#5e6b80", fontWeight: 600, textTransform: "uppercase" }}>Total Amount Invested</span>
+            <DollarSign size={18} color="#4f8fff" />
           </div>
-          <div style={{ fontSize: 28, fontWeight: 800, color: "#34d399", marginBottom: 4 }}>
-            {formatCurrency(availableBalance, user.currency)}
+          <div style={{ fontSize: 28, fontWeight: 800, color: "#4f8fff", marginBottom: 4 }}>
+            {formatCurrency(totalAmountInvested, user.currency)}
           </div>
-          <div style={{ fontSize: 12, color: "#7f8799" }}>Ready to withdraw</div>
-        </div>
-
-        <div
-          style={{
-            background: "linear-gradient(135deg, rgba(255, 77, 106, 0.1), rgba(255, 109, 135, 0.05))",
-            border: "1px solid rgba(255, 77, 106, 0.2)",
-            borderRadius: 12,
-            padding: 20,
-          }}
-        >
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
-            <span style={{ fontSize: 12, color: "#5e6b80", fontWeight: 600, textTransform: "uppercase" }}>Total Withdrawn</span>
-            <TrendingDown size={18} color="#ff4d6a" />
-          </div>
-          <div style={{ fontSize: 28, fontWeight: 800, color: "#ff4d6a", marginBottom: 4 }}>
-            {formatCurrency(totalWithdrawn, user.currency)}
-          </div>
-          <div style={{ fontSize: 12, color: "#7f8799" }}>{withdrawals.filter((w) => w.status === "completed" && w.method !== "investment").length} completed</div>
+          <div style={{ fontSize: 12, color: "#7f8799" }}>Across all recorded holdings</div>
         </div>
 
         <div
@@ -240,6 +308,24 @@ const Withdrawals = ({ user, onSave }: Props) => {
             {formatCurrency(investmentProceeds, user.currency)}
           </div>
           <div style={{ fontSize: 12, color: "#7f8799" }}>Cash returned from closed positions</div>
+        </div>
+
+        <div
+          style={{
+            background: "linear-gradient(135deg, rgba(255, 77, 106, 0.1), rgba(255, 109, 135, 0.05))",
+            border: "1px solid rgba(255, 77, 106, 0.2)",
+            borderRadius: 12,
+            padding: 20,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+            <span style={{ fontSize: 12, color: "#5e6b80", fontWeight: 600, textTransform: "uppercase" }}>Total Withdrawn</span>
+            <TrendingDown size={18} color="#ff4d6a" />
+          </div>
+          <div style={{ fontSize: 28, fontWeight: 800, color: "#ff4d6a", marginBottom: 4 }}>
+            {formatCurrency(totalWithdrawn, user.currency)}
+          </div>
+          <div style={{ fontSize: 12, color: "#7f8799" }}>{completedWithdrawals.length} completed</div>
         </div>
 
         <div
@@ -271,18 +357,19 @@ const Withdrawals = ({ user, onSave }: Props) => {
       >
         <div style={{ padding: "20px 24px", borderBottom: "1px solid rgba(30, 39, 56, 0.6)" }}>
           <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-            <div className="search-box">
+            <div className="search-box withdrawals-search-box shared-black-search">
               <Search size={16} className="search-icon" />
               <input
                 type="text"
-                placeholder="Search withdrawals..."
+                aria-label="Search withdrawals by method, note, or amount"
+                placeholder="Search"
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={(e) => { setSearch(e.target.value); setCurrentPage(1); }}
               />
             </div>
             <select
               value={filter}
-              onChange={(e) => setFilter(e.target.value as any)}
+              onChange={(e) => { setFilter(e.target.value as any); setCurrentPage(1); }}
               className="filter-dropdown"
             >
               <option value="all">All Status</option>
@@ -307,7 +394,7 @@ const Withdrawals = ({ user, onSave }: Props) => {
             </thead>
             <tbody>
               {filteredWithdrawals.length > 0 ? (
-                filteredWithdrawals.map((withdrawal) => {
+                pageWithdrawals.map((withdrawal) => {
                   const statusBadge = getStatusBadge(withdrawal.status);
                   const date = new Date(withdrawal.date);
                   return (
@@ -315,8 +402,13 @@ const Withdrawals = ({ user, onSave }: Props) => {
                       <td style={{ padding: "16px 24px", color: "#e8edf5", fontSize: 14 }}>
                         {date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
                       </td>
-                      <td style={{ padding: "16px 24px", color: withdrawal.method === "investment" ? "#34d399" : "#ff4d6a", fontSize: 14, fontWeight: 700 }}>
-                        {withdrawal.method === "investment" ? "+" : "-"}{formatCurrency(withdrawal.amount, user.currency)}
+                      <td style={{ padding: "16px 24px", color: "#ff4d6a", fontSize: 14, fontWeight: 700 }}>
+                        -{formatCurrency(Math.abs(withdrawal.amount), user.currency)}
+                        {withdrawal.method === "investment" && (
+                          <small style={{ display: "block", marginTop: 4, color: "#7f8799", fontSize: 10, fontWeight: 500 }}>
+                            Full sale proceeds
+                          </small>
+                        )}
                       </td>
                       <td style={{ padding: "16px 24px" }}>
                         <span
@@ -353,19 +445,26 @@ const Withdrawals = ({ user, onSave }: Props) => {
                         </span>
                       </td>
                       <td style={{ padding: "16px 24px", textAlign: "center" }}>
-                        {withdrawal.method !== "investment" && <button
+                        <div className="withdrawal-actions">
+                        <button
+                          type="button"
+                          className="action-button"
+                          onClick={() => openEditWithdrawal(withdrawal)}
+                          title="Edit withdrawal"
+                          aria-label="Edit withdrawal"
+                        >
+                          <Pencil size={16} />
+                        </button>
+                        <button
+                          type="button"
+                          className="action-button delete"
                           onClick={() => handleDeleteWithdrawal(withdrawal.id)}
-                          style={{
-                            background: "none",
-                            border: "none",
-                            cursor: "pointer",
-                            color: "#ff4d6a",
-                            padding: "6px 8px",
-                          }}
                           title="Delete withdrawal"
+                          aria-label="Delete withdrawal"
                         >
                           <Trash2 size={16} />
-                        </button>}
+                        </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -380,6 +479,17 @@ const Withdrawals = ({ user, onSave }: Props) => {
             </tbody>
           </table>
         </div>
+        {filteredWithdrawals.length > PAGE_SIZE && <div className="enterprise-table-footer">
+          <div className="footer-stats">
+            <span>Showing <strong>{filteredWithdrawals.length ? (visiblePage - 1) * PAGE_SIZE + 1 : 0}–{Math.min(visiblePage * PAGE_SIZE, filteredWithdrawals.length)}</strong> of <strong>{filteredWithdrawals.length}</strong> withdrawals</span>
+            <span className="page-size-label">20 per page</span>
+          </div>
+          {filteredWithdrawals.length > 0 && <nav className="transaction-pagination" aria-label="Withdrawal pages">
+            <button type="button" className="pagination-button" onClick={() => setCurrentPage((page) => Math.max(1, Math.min(page, pageCount) - 1))} disabled={visiblePage <= 1} aria-label="Previous withdrawal page"><ChevronLeft size={15} /> Previous</button>
+            <span>Page <strong>{visiblePage}</strong> of <strong>{pageCount}</strong></span>
+            <button type="button" className="pagination-button" onClick={() => setCurrentPage((page) => Math.min(pageCount, Math.min(page, pageCount) + 1))} disabled={visiblePage >= pageCount} aria-label="Next withdrawal page">Next <ChevronRight size={15} /></button>
+          </nav>}
+        </div>}
       </div>
 
       {showModal && (
@@ -387,12 +497,12 @@ const Withdrawals = ({ user, onSave }: Props) => {
           className="modal-overlay"
           onMouseDown={(e) => e.target === e.currentTarget && setShowModal(false)}
         >
-          <div className="transaction-modal" style={{ maxWidth: 500 }}>
+          <div className="transaction-modal withdrawal-modal">
             <div className="modal-header">
               <div className="modal-header-text">
                 <span className="eyebrow">CASH FLOW</span>
-                <h2>Record Withdrawal</h2>
-                <p>Add a new withdrawal record to your account.</p>
+                <h2>{editingWithdrawal ? "Edit withdrawal" : "Record Withdrawal"}</h2>
+                <p>{editingWithdrawal ? "Update the date, amount, note, or status for this withdrawal." : "Add a new withdrawal record to your account."}</p>
               </div>
               <button
                 type="button"
@@ -403,7 +513,7 @@ const Withdrawals = ({ user, onSave }: Props) => {
               </button>
             </div>
 
-            <form className="modal-form" onSubmit={handleAddWithdrawal}>
+            <form className="modal-form" onSubmit={handleSaveWithdrawal}>
               <div className="form-grid">
                 <div className="form-group form-span-full">
                   <label htmlFor="wd-amount">
@@ -437,8 +547,10 @@ const Withdrawals = ({ user, onSave }: Props) => {
                     id="wd-method"
                     className="withdrawal-method-select"
                     value={method}
-                    onChange={(e) => setMethod(e.target.value as any)}
+                    disabled={editingWithdrawal?.method === "investment"}
+                    onChange={(e) => setMethod(e.target.value as Withdrawal["method"])}
                   >
+                    {editingWithdrawal?.method === "investment" && <option value="investment">Investment sale</option>}
                     <option value="bank">Bank Transfer</option>
                     <option value="crypto">Cryptocurrency</option>
                     <option value="cash">Cash</option>
@@ -455,10 +567,19 @@ const Withdrawals = ({ user, onSave }: Props) => {
                   <input
                     id="wd-date"
                     type="date"
-                    value={new Date().toISOString().split("T")[0]}
-                    disabled
+                    value={date}
+                    onChange={(e) => setDate(e.target.value)}
                   />
                 </div>
+
+                {editingWithdrawal && editingWithdrawal.method !== "investment" && <div className="form-group">
+                  <label htmlFor="wd-status"><span className="field-label-text">Status</span></label>
+                  <select id="wd-status" value={withdrawalStatus} onChange={(e) => setWithdrawalStatus(e.target.value as Withdrawal["status"])}>
+                    <option value="completed">Completed</option>
+                    <option value="pending">Pending</option>
+                    <option value="cancelled">Cancelled</option>
+                  </select>
+                </div>}
 
                 <div className="form-group form-span-full">
                   <label htmlFor="wd-note">
@@ -490,7 +611,7 @@ const Withdrawals = ({ user, onSave }: Props) => {
                   Cancel
                 </button>
                 <button type="submit" className="primary-button">
-                  <Check size={16} /> Record Withdrawal
+                  <Check size={16} /> {editingWithdrawal ? "Save changes" : "Record Withdrawal"}
                 </button>
               </div>
             </form>

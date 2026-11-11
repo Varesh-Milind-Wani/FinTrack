@@ -11,13 +11,14 @@ import type {
 import TransactionTable from "../components/TransactionTable";
 import { exportFinanceToExcel, importFinanceFromExcel } from "../utils/excel";
 import type { FinanceImport } from "../utils/excel";
+import { useAppDialog } from "../components/AppDialog";
 
 interface Props {
   user: UserAccount;
   onAdd: () => void;
   onDelete: (id: string) => void;
   onEdit: (transaction: Transaction) => void;
-  onImport?: (backup: FinanceImport) => { imported: number; skipped: number; otherRecords: number };
+  onImport?: (backup: FinanceImport) => { imported: number; skipped: number; otherRecords: number; weekendSkipped?: number };
 }
 
 const Transactions = ({
@@ -28,6 +29,7 @@ const Transactions = ({
   onImport,
 }: Props) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { alert: showAlert } = useAppDialog();
   const [importing, setImporting] = useState(false);
 
   const handleImportClick = () => {
@@ -45,14 +47,20 @@ const Transactions = ({
         imported: backup.transactions.length,
         skipped: 0,
         otherRecords: 0,
+        weekendSkipped: 0,
       };
-      alert(
-        result.skipped > 0
-          ? `Restored ${result.imported} transactions and ${result.otherRecords} other finance records. ${result.skipped} transaction${result.skipped === 1 ? " was" : "s were"} skipped because their month is locked. Unlock the month in Reports to import them.`
+      const skippedDetails = [
+        result.skipped > 0 ? `${result.skipped} skipped because their month is locked` : "",
+        (result.weekendSkipped ?? 0) > 0 ? `${result.weekendSkipped} skipped because transactions cannot be dated on Saturday or Sunday` : "",
+      ].filter(Boolean).join(". ");
+      await showAlert(
+        skippedDetails
+          ? `Restored ${result.imported} transactions and ${result.otherRecords} other finance records. ${skippedDetails}. ${result.skipped > 0 ? "Unlock the month in Reports to import locked transactions." : ""}`
           : `Successfully restored ${result.imported} transactions and ${result.otherRecords} other finance records.`,
+        "Import complete",
       );
     } catch (error) {
-      alert(`Import failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+      await showAlert(`Import failed: ${error instanceof Error ? error.message : "Unknown error"}`, "Import failed");
     } finally {
       setImporting(false);
       if (fileInputRef.current) {

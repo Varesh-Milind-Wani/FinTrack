@@ -19,6 +19,7 @@ import type { DefaultCostSchedule, UserAccount } from "../types/finance";
 import { formatCurrency } from "../utils/money";
 import { calculateCurrentBalance, getAuthoritativeBalance } from "../utils/balance";
 import { createBalancePinSalt, hashBalancePin, verifyBalancePin } from "../utils/balancePin";
+import { usePersistentState } from "../hooks/usePersistentState";
 
 interface Props {
   user: UserAccount;
@@ -63,9 +64,9 @@ const Settings = ({ user, onSave }: Props) => {
   const [scheduleAmount, setScheduleAmount] = useState("");
   const [scheduleStatus, setScheduleStatus] = useState<string | null>(null);
   const [editingScheduleId, setEditingScheduleId] = useState<string | null>(null);
-  const [scheduleSearch, setScheduleSearch] = useState("");
-  const [scheduleDateFilter, setScheduleDateFilter] = useState("all");
-  const [scheduleSort, setScheduleSort] = useState<{ key: "date" | "name" | "amount"; direction: "asc" | "desc" }>({ key: "date", direction: "desc" });
+  const [scheduleSearch, setScheduleSearch] = usePersistentState("settings.costScheduleSearch", "");
+  const [scheduleDateFilter, setScheduleDateFilter] = usePersistentState("settings.costScheduleDate", "all");
+  const [scheduleSort, setScheduleSort] = usePersistentState<{ key: "date" | "name" | "amount"; direction: "asc" | "desc" }>("settings.costScheduleSort", { key: "date", direction: "desc" });
 
   useEffect(() => {
     setStartingBalance(String(user.startingBalance));

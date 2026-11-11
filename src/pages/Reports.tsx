@@ -1,5 +1,5 @@
-import { BarChart3, CalendarDays, Lock, ShieldCheck, TrendingDown, TrendingUp, Unlock, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { BarChart3, CalendarDays, ChevronLeft, ChevronRight, Lock, Search, ShieldCheck, TrendingDown, TrendingUp, Unlock, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import type { UserAccount } from "../types/finance";
 import { formatCurrency } from "../utils/money";
 import { getMonthKey, getMonthLabel } from "../utils/monthLocks";
@@ -17,11 +17,15 @@ type MonthlyReport = {
   transactions: number;
 };
 
+const REPORT_PAGE_SIZE = 20;
+
 const Reports = ({ user, onToggleMonthLock }: Props) => {
   const [unlockMonthKey, setUnlockMonthKey] = useState<string | null>(null);
   const [unlockPin, setUnlockPin] = useState("");
   const [unlockError, setUnlockError] = useState<string | null>(null);
   const [pinNotice, setPinNotice] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [search, setSearch] = useState("");
   const reports = useMemo(() => {
     const byMonth = new Map<string, MonthlyReport>();
 
@@ -42,6 +46,31 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
 
     return [...byMonth.values()].sort((left, right) => right.monthKey.localeCompare(left.monthKey));
   }, [user.transactions]);
+  const filteredReports = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase();
+    if (!query) return reports;
+    return reports.filter((report) => {
+      const locked = user.lockedMonths?.includes(report.monthKey) ?? false;
+      const net = report.profit - report.loss;
+      return [
+        report.monthKey,
+        getMonthLabel(report.monthKey),
+        String(report.transactions),
+        String(report.profit),
+        String(report.loss),
+        String(net),
+        formatCurrency(report.profit, user.currency),
+        formatCurrency(report.loss, user.currency),
+        formatCurrency(net, user.currency),
+        locked ? "locked period secured" : "open for changes",
+      ].join(" ").toLocaleLowerCase().includes(query);
+    });
+  }, [reports, search, user.lockedMonths, user.currency]);
+  const pageCount = Math.max(1, Math.ceil(filteredReports.length / REPORT_PAGE_SIZE));
+  const visiblePage = Math.min(currentPage, pageCount);
+  const pageReports = filteredReports.slice((visiblePage - 1) * REPORT_PAGE_SIZE, visiblePage * REPORT_PAGE_SIZE);
+
+  useEffect(() => setCurrentPage(1), [user.transactions, search]);
 
   const totals = useMemo(() => reports.reduce(
     (total, report) => ({
@@ -112,6 +141,14 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
 
       <div className="reports-table-card">
         <div className="reports-table-title"><div><h3>Monthly ledger</h3><p>Lock a completed month to prevent any changes to its transaction records.</p></div><ShieldCheck size={20} /></div>
+        <div className="reports-search-toolbar">
+          <div className="search-box shared-black-search">
+            <Search size={16} className="search-icon" />
+            <input aria-label="Search monthly reports" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search" />
+          </div>
+          <span>{filteredReports.length} {filteredReports.length === 1 ? "month" : "months"}</span>
+        </div>
+        <div className="reports-table-scroll">
         <table className="reports-table">
           <thead>
             <tr>
@@ -125,7 +162,7 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
             </tr>
           </thead>
           <tbody>
-            {reports.map((report) => {
+            {pageReports.map((report) => {
               const locked = user.lockedMonths?.includes(report.monthKey) ?? false;
               const net = report.profit - report.loss;
               return (
@@ -152,11 +189,23 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
                 </tr>
               );
             })}
-            {reports.length === 0 && (
-              <tr><td colSpan={7} className="reports-empty">No transactions are available for a monthly report yet.</td></tr>
+            {filteredReports.length === 0 && (
+              <tr><td colSpan={7} className="reports-empty">{reports.length ? "No monthly reports match your search." : "No transactions are available for a monthly report yet."}</td></tr>
             )}
           </tbody>
         </table>
+        </div>
+        {filteredReports.length > REPORT_PAGE_SIZE && <div className="enterprise-table-footer">
+          <div className="footer-stats">
+            <span>Showing <strong>{(visiblePage - 1) * REPORT_PAGE_SIZE + 1}–{Math.min(visiblePage * REPORT_PAGE_SIZE, filteredReports.length)}</strong> of <strong>{filteredReports.length}</strong> months</span>
+            <span className="page-size-label">{REPORT_PAGE_SIZE} per page</span>
+          </div>
+          <nav className="transaction-pagination" aria-label="Monthly report pages">
+            <button type="button" className="pagination-button" onClick={() => setCurrentPage((page) => Math.max(1, page - 1))} disabled={visiblePage <= 1} aria-label="Previous report page"><ChevronLeft size={15} /> Previous</button>
+            <span>Page <strong>{visiblePage}</strong> of <strong>{pageCount}</strong></span>
+            <button type="button" className="pagination-button" onClick={() => setCurrentPage((page) => Math.min(pageCount, page + 1))} disabled={visiblePage >= pageCount} aria-label="Next report page">Next <ChevronRight size={15} /></button>
+          </nav>
+        </div>}
       </div>
       {unlockMonthKey && (
         <div className="modal-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setUnlockMonthKey(null); }}>

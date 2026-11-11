@@ -38,13 +38,25 @@ const normalizeUser = (user: UserAccount): UserAccount => ({
           // Preserve transaction as-is - don't recalculate amounts
           // The amount field already contains the correct net amount
           // grossAmount and costAmount are stored separately
-          return {
+          const normalized = {
             ...transaction,
             amount: transaction.amount ?? 0,
             price: transaction.price ?? transaction.grossAmount ?? transaction.amount ?? 0,
             grossAmount: transaction.grossAmount ?? transaction.amount ?? 0,
             costAmount: transaction.costAmount ?? 0,
           };
+          // Repair older profit records where a cost larger than gross P&L was
+          // clamped to zero instead of turning the transaction into a loss.
+          if (
+            normalized.type === "profit" &&
+            normalized.amount === 0 &&
+            normalized.grossAmount > 0 &&
+            normalized.costAmount > normalized.grossAmount
+          ) {
+            normalized.type = "loss";
+            normalized.amount = normalized.costAmount - normalized.grossAmount;
+          }
+          return normalized;
         })
       : [];
 
@@ -53,11 +65,16 @@ const normalizeUser = (user: UserAccount): UserAccount => ({
           (expense) => Boolean(expense) && typeof expense.id === "string" && Number.isFinite(expense.amount)
         )
       : [];
+    const incomes = Array.isArray(user.incomes)
+      ? user.incomes.filter(
+          (income) => Boolean(income) && typeof income.id === "string" && Number.isFinite(income.amount)
+        )
+      : [];
     const lockedMonths = Array.isArray(user.lockedMonths)
       ? [...new Set(user.lockedMonths.filter((month) => /^\d{4}-(0[1-9]|1[0-2])$/.test(month)))]
       : [];
 
-    return { defaultCostSchedules: schedules, transactions, expenses, lockedMonths };
+    return { defaultCostSchedules: schedules, transactions, expenses, incomes, lockedMonths };
   })(),
   name: user.name ?? "",
   email: user.email ?? "",
@@ -98,13 +115,25 @@ const upsertUser = (
 const persistSessionUser = (user: UserAccount) => {
   const normalizedUser = normalizeUser(user);
   const users = getUsers();
-
-  localStorage.setItem(
-    USERS_KEY,
-    JSON.stringify(upsertUser(users, normalizedUser))
-  );
-  localStorage.setItem(SESSION_KEY, normalizedUser.id);
-  localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(normalizedUser));
+  const previousValues = [USERS_KEY, SESSION_KEY, CURRENT_USER_KEY].map((key) => localStorage.getItem(key));
+  try {
+    localStorage.setItem(USERS_KEY, JSON.stringify(upsertUser(users, normalizedUser)));
+    localStorage.setItem(SESSION_KEY, normalizedUser.id);
+    localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(normalizedUser));
+  } catch (error) {
+    // Keep the account snapshot and session keys consistent if storage is full
+    // or unavailable. Callers can surface the failure instead of claiming save.
+    [USERS_KEY, SESSION_KEY, CURRENT_USER_KEY].forEach((key, index) => {
+      try {
+        const oldValue = previousValues[index];
+        if (oldValue === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, oldValue);
+      } catch { /* Best-effort rollback when the browser blocks storage writes. */ }
+    });
+    throw new Error(error instanceof DOMException && error.name === "QuotaExceededError"
+      ? "There is not enough browser storage available to save this data. Export a backup and free storage space, then try again."
+      : "Browser storage is unavailable. Your changes were not saved.");
+  }
   window.dispatchEvent(new Event(STORAGE_CHANGE_EVENT));
 
   return normalizedUser;

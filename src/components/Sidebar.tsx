@@ -12,15 +12,22 @@ import {
   MessageCircle,
   PiggyBank,
   FileBarChart,
+  Sparkles,
+  Activity,
+  ChartCandlestick,
+  BellRing,
 } from "lucide-react";
 import type { UserAccount } from "../types/finance";
 
 interface SidebarProps {
   user: UserAccount;
-  activePage: "dashboard" | "transactions" | "analytics" | "profitloss" | "reports" | "withdrawals" | "settings" | "chat" | "investment" | "expenses" | "profile";
+  activePage: "dashboard" | "transactions" | "trade-signal" | "analytics" | "profitloss" | "reports" | "withdrawals" | "income" | "settings" | "chat" | "ai-analysis" | "investment" | "expenses" | "profile" | "scenario-lab";
   onPageChange: (
-    page: "dashboard" | "transactions" | "analytics" | "profitloss" | "reports" | "withdrawals" | "settings" | "chat" | "investment" | "expenses" | "profile"
+    page: "dashboard" | "transactions" | "trade-signal" | "analytics" | "profitloss" | "reports" | "withdrawals" | "income" | "settings" | "chat" | "ai-analysis" | "investment" | "expenses" | "profile" | "scenario-lab"
   ) => void;
+  notificationsOpen: boolean;
+  unreadNotificationCount: number;
+  onOpenNotifications: () => void;
   onLogout: () => void;
   mobileOpen: boolean;
   collapsed: boolean;
@@ -31,6 +38,9 @@ const Sidebar = ({
   user,
   activePage,
   onPageChange,
+  notificationsOpen,
+  unreadNotificationCount,
+  onOpenNotifications,
   onLogout,
   mobileOpen,
   collapsed,
@@ -88,6 +98,16 @@ const Sidebar = ({
         </button>
 
         <button
+          className={activePage === "trade-signal" ? "nav-button active" : "nav-button"}
+          onClick={() => onPageChange("trade-signal")}
+          aria-label="Trade Signal"
+          title={collapsed ? "Trade Signal" : undefined}
+        >
+          <Activity size={18} />
+          <span className="nav-label">Trade Signal</span>
+        </button>
+
+        <button
           className={
             activePage === "analytics"
               ? "nav-button active"
@@ -130,6 +150,16 @@ const Sidebar = ({
         </button>
 
         <button
+          className={activePage === "income" ? "nav-button active" : "nav-button"}
+          onClick={() => onPageChange("income")}
+          aria-label="Income"
+          title={collapsed ? "Income" : undefined}
+        >
+          <CircleDollarSign size={18} />
+          <span className="nav-label">Income</span>
+        </button>
+
+        <button
           className={
             activePage === "reports"
               ? "nav-button active"
@@ -159,20 +189,6 @@ const Sidebar = ({
 
         <button
           className={
-            activePage === "settings"
-              ? "nav-button active"
-              : "nav-button"
-          }
-          onClick={() => onPageChange("settings")}
-          aria-label="Settings"
-          title={collapsed ? "Settings" : undefined}
-        >
-          <Settings size={18} />
-          <span className="nav-label">Settings</span>
-        </button>
-
-        <button
-          className={
             activePage === "chat"
               ? "nav-button active"
               : "nav-button"
@@ -183,6 +199,32 @@ const Sidebar = ({
         >
           <MessageCircle size={18} />
           <span className="nav-label">Chat Assistant</span>
+        </button>
+
+        <button className={activePage === "ai-analysis" ? "nav-button active" : "nav-button"}
+          onClick={() => onPageChange("ai-analysis")} aria-label="AI Analysis" title={collapsed ? "AI Analysis" : undefined}>
+          <Sparkles size={18} /><span className="nav-label">AI Analysis</span>
+        </button>
+
+        <button className={activePage === "scenario-lab" ? "nav-button active" : "nav-button"}
+          onClick={() => onPageChange("scenario-lab")} aria-label="Scenario Lab" title={collapsed ? "Scenario Lab" : undefined}>
+          <ChartCandlestick size={18} /><span className="nav-label">Scenario Lab</span>
+        </button>
+
+        <button className={notificationsOpen ? "nav-button active" : "nav-button"}
+          onClick={onOpenNotifications} aria-label={unreadNotificationCount ? `Notifications, ${unreadNotificationCount} unread` : "Notifications"} aria-expanded={notificationsOpen} title={collapsed ? `Notifications${unreadNotificationCount ? ` (${unreadNotificationCount} unread)` : ""}` : undefined}>
+          <BellRing size={18} /><span className="nav-label">Notifications</span>
+          {unreadNotificationCount > 0 && <span className="nav-notification-badge" aria-hidden="true">{unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}</span>}
+        </button>
+
+        <button
+          className={activePage === "settings" ? "nav-button active" : "nav-button"}
+          onClick={() => onPageChange("settings")}
+          aria-label="Settings"
+          title={collapsed ? "Settings" : undefined}
+        >
+          <Settings size={18} />
+          <span className="nav-label">Settings</span>
         </button>
       </nav>
 

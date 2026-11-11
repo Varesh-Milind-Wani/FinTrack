@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import type { DefaultCostSchedule, Expense, Investment, Transaction, UserAccount, Withdrawal } from "../types/finance";
+import type { DefaultCostSchedule, Expense, IncomeEntry, Investment, Transaction, UserAccount, Withdrawal } from "../types/finance";
 import { getAuthoritativeBalance } from "./balance";
 
 export interface FinanceImport {
@@ -7,6 +7,7 @@ export interface FinanceImport {
   transactions: Transaction[];
   investments: Investment[];
   expenses: Expense[];
+  incomes?: IncomeEntry[];
   withdrawals: Withdrawal[];
   defaultCostSchedules: DefaultCostSchedule[];
   lockedMonths: string[];
@@ -123,6 +124,8 @@ const parseTransactionDate = (dateValue: unknown, timeValue: unknown): Date | nu
     : null;
 };
 
+const toLocalIsoDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+
 export const exportFinanceToExcel = (user: UserAccount) => {
   const totalProfit = user.transactions
     .filter((transaction) => transaction.type === "profit")
@@ -159,18 +162,28 @@ export const exportFinanceToExcel = (user: UserAccount) => {
   const transactionData = user.transactions.map((transaction) => ({
     "Transaction ID": transaction.id,
     "Recorded At (ISO)": transaction.date,
+    "Created At (ISO)": transaction.createdAt ?? "",
     Date: new Date(transaction.date).toLocaleDateString("en-IN"),
     Time: new Date(transaction.date).toLocaleTimeString("en-IN"),
     Type: transaction.type === "profit" ? "Profit" : "Loss",
     Category: transaction.category,
+    Instrument: transaction.instrument ?? "",
+    "Strike Price": transaction.strikePrice ?? "",
+    "Option Type": transaction.optionType ?? "",
+    "Expiry Date": transaction.expiryDate ?? "",
+    "Source Order IDs": transaction.sourceOrderIds?.join(",") ?? "",
     Note: transaction.note || "-",
     Price: transaction.price || 0,
     "Entry Price": transaction.entryPrice ?? "",
     "Exit Price": transaction.exitPrice ?? "",
     Quantity: transaction.quantity ?? "",
+    "Planned Risk": transaction.plannedRiskAmount ?? "",
     "Trades": transaction.type === "profit" ? (transaction.profitTradeCount || 0) : (transaction.lossTradeCount || 0),
     "Gross Amount": transaction.grossAmount || 0,
     "Cost Amount": transaction.costAmount || 0,
+    Brokerage: transaction.brokerageAmount ?? "",
+    "Other Charges": transaction.otherChargesAmount ?? "",
+    "Charges Basis": transaction.chargesBasis ?? "",
     "Net Amount": transaction.amount,
     "Signed Amount":
       transaction.type === "profit"
@@ -189,6 +202,7 @@ export const exportFinanceToExcel = (user: UserAccount) => {
     transactions: user.transactions,
     investments: user.investments ?? [],
     expenses: user.expenses ?? [],
+    incomes: user.incomes ?? [],
     withdrawals: user.withdrawals ?? [],
     defaultCostSchedules: user.defaultCostSchedules ?? [],
     lockedMonths: user.lockedMonths ?? [],
@@ -226,12 +240,16 @@ export const exportFinanceToExcel = (user: UserAccount) => {
   const transactionSheet =
     XLSX.utils.json_to_sheet(transactionData);
   const investmentSheet = XLSX.utils.json_to_sheet((user.investments ?? []).map((item) => ({
-    "Investment ID": item.id, "Recorded At (ISO)": item.date, Name: item.name, Type: item.type,
+    "Investment ID": item.id, "Recorded At (ISO)": item.date, Name: item.name, Type: item.type, "Source Order ID": item.sourceOrderId ?? "", "Position Side": item.positionSide ?? "",
     Quantity: item.quantity ?? 1, "Closed Position": item.isClosed ?? false,
     "Amount Invested": item.amount, "Current Value": item.currentValue, "Entry Price": item.entryPrice ?? "", "Exit Price": item.exitPrice ?? "", "Direct Profit / Loss": item.directPnl ?? "", Note: item.note,
+    "Annual Interest Rate (%)": item.annualInterestRate ?? "", "Duration (Years)": item.durationYears ?? "", "Duration (Months)": item.durationMonths ?? "",
   })));
   const expenseSheet = XLSX.utils.json_to_sheet((user.expenses ?? []).map((item) => ({
     "Expense ID": item.id, "Recorded At (ISO)": item.date, Name: item.name, Category: item.category, Amount: item.amount, Note: item.note,
+  })));
+  const incomeSheet = XLSX.utils.json_to_sheet((user.incomes ?? []).map((item) => ({
+    "Income ID": item.id, "Recorded At (ISO)": item.date, Source: item.source, Category: item.category, Amount: item.amount, Note: item.note,
   })));
   const withdrawalSheet = XLSX.utils.json_to_sheet((user.withdrawals ?? []).map((item) => ({
     "Withdrawal ID": item.id, "Recorded At (ISO)": item.date, Amount: item.amount, Method: item.method, "Source Investment ID": item.sourceInvestmentId ?? "", Status: item.status, Note: item.note,
@@ -286,6 +304,7 @@ export const exportFinanceToExcel = (user: UserAccount) => {
   XLSX.utils.book_append_sheet(workbook, backupSheet, "FinTrack Backup");
   XLSX.utils.book_append_sheet(workbook, investmentSheet, "Investments");
   XLSX.utils.book_append_sheet(workbook, expenseSheet, "Expenses");
+  XLSX.utils.book_append_sheet(workbook, incomeSheet, "Income");
   XLSX.utils.book_append_sheet(workbook, withdrawalSheet, "Withdrawals");
   XLSX.utils.book_append_sheet(workbook, scheduleSheet, "Cost Schedules");
   XLSX.utils.book_append_sheet(workbook, settingsSheet, "Settings");
@@ -335,6 +354,7 @@ export const importFinanceFromExcel = (file: File): Promise<FinanceImport> => {
                 transactions: backup.transactions,
                 investments: Array.isArray(backup.investments) ? backup.investments : [],
                 expenses: Array.isArray(backup.expenses) ? backup.expenses : [],
+                incomes: Array.isArray(backup.incomes) ? backup.incomes : [],
                 withdrawals: Array.isArray(backup.withdrawals) ? backup.withdrawals : [],
                 defaultCostSchedules: Array.isArray(backup.defaultCostSchedules) ? backup.defaultCostSchedules : [],
                 lockedMonths: Array.isArray(backup.lockedMonths) ? backup.lockedMonths : [],
@@ -356,7 +376,7 @@ export const importFinanceFromExcel = (file: File): Promise<FinanceImport> => {
         };
 
         const transactionRows = parseRows("Transactions");
-        if (!workbook.Sheets["Transactions"] && !workbook.Sheets["Investments"] && !workbook.Sheets["Expenses"] && !workbook.Sheets["Withdrawals"]) {
+        if (!workbook.Sheets["Transactions"] && !workbook.Sheets["Investments"] && !workbook.Sheets["Expenses"] && !workbook.Sheets["Income"] && !workbook.Sheets["Withdrawals"]) {
           reject(new Error("No FinTrack data sheets were found in this Excel file"));
           return;
         }
@@ -391,15 +411,39 @@ export const importFinanceFromExcel = (file: File): Promise<FinanceImport> => {
             const transaction: Transaction = {
               id: idFor(row, "Transaction ID"),
               date: date.toISOString(),
+              createdAt: (() => {
+                const value = String(getCellValue(row, "Created At (ISO)") ?? "").trim();
+                const timestamp = Date.parse(value);
+                return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
+              })(),
               type,
               // Amount is stored as a positive value for both profit and loss.
               amount: Math.abs(toNumber(netAmount) || signedAmount),
               grossAmount: toNumber(getCellValue(row, "Gross Amount")),
               costAmount: toNumber(getCellValue(row, "Cost Amount")),
+              brokerageAmount: getCellValue(row, "Brokerage") === "" ? undefined : toNumber(getCellValue(row, "Brokerage")),
+              otherChargesAmount: getCellValue(row, "Other Charges") === "" ? undefined : toNumber(getCellValue(row, "Other Charges")),
+              chargesBasis: (() => { const value = String(getCellValue(row, "Charges Basis") ?? "").toLowerCase(); return value === "manual" || value === "estimated" ? value : undefined; })(),
               price: toNumber(getCellValue(row, "Price")),
               entryPrice: toNumber(getCellValue(row, "Entry Price")) || undefined,
               exitPrice: toNumber(getCellValue(row, "Exit Price")) || undefined,
               quantity: toNumber(getCellValue(row, "Quantity")) || undefined,
+              plannedRiskAmount: toNumber(getCellValue(row, "Planned Risk")) > 0 ? toNumber(getCellValue(row, "Planned Risk")) : undefined,
+              instrument: String(getCellValue(row, "Instrument") ?? "").trim() || undefined,
+              strikePrice: getCellValue(row, "Strike Price") === "" ? undefined : toNumber(getCellValue(row, "Strike Price")) || undefined,
+              optionType: (() => {
+                const value = String(getCellValue(row, "Option Type") ?? "").trim().toUpperCase();
+                return value === "CE" || value === "PE" ? value : undefined;
+              })(),
+              expiryDate: (() => {
+                const value = getCellValue(row, "Expiry Date");
+                if (value instanceof Date && !Number.isNaN(value.getTime())) return toLocalIsoDate(value);
+                const text = String(value ?? "").trim();
+                if (!text) return undefined;
+                const parsed = parseTransactionDate(text, undefined);
+                return parsed ? toLocalIsoDate(parsed) : undefined;
+              })(),
+              sourceOrderIds: String(getCellValue(row, "Source Order IDs") ?? "").split(",").map((value) => value.trim()).filter(Boolean),
               category: String(getCellValue(row, "Category") || "Other"),
               note: noteValue.trim() === "-" ? "" : noteValue,
               profitTradeCount: type === "profit" ? toNumber(getCellValue(row, "Trades")) : undefined,
@@ -428,6 +472,11 @@ export const importFinanceFromExcel = (file: File): Promise<FinanceImport> => {
             amount: amount || (entryPrice ? entryPrice * quantity : 0),
             currentValue: toNumber(getCellValue(row, "Current Value")), entryPrice,
             exitPrice: toNumber(getCellValue(row, "Exit Price")) || undefined,
+            annualInterestRate: getCellValue(row, "Annual Interest Rate (%)") === "" ? undefined : toNumber(getCellValue(row, "Annual Interest Rate (%)")),
+            durationYears: getCellValue(row, "Duration (Years)") === "" ? undefined : toNumber(getCellValue(row, "Duration (Years)")),
+            durationMonths: getCellValue(row, "Duration (Months)") === "" ? undefined : toNumber(getCellValue(row, "Duration (Months)")),
+            sourceOrderId: String(getCellValue(row, "Source Order ID") ?? "").trim() || undefined,
+            positionSide: String(getCellValue(row, "Position Side") ?? "").toLowerCase() === "short" ? "short" : String(getCellValue(row, "Position Side") ?? "").toLowerCase() === "long" ? "long" : undefined,
             directPnl: getCellValue(row, "Direct Profit / Loss") === "" ? undefined : toNumber(getCellValue(row, "Direct Profit / Loss")),
             note: String(getCellValue(row, "Note") ?? ""),
           }];
@@ -437,6 +486,12 @@ export const importFinanceFromExcel = (file: File): Promise<FinanceImport> => {
           const name = String(getCellValue(row, "Name") ?? "").trim();
           if (!date || !name) return [];
           return [{ id: idFor(row, "Expense ID"), date, name, category: String(getCellValue(row, "Category") || "Other"), amount: toNumber(getCellValue(row, "Amount")), note: String(getCellValue(row, "Note") ?? "") }];
+        });
+        const incomes: IncomeEntry[] = parseRows("Income").flatMap((row) => {
+          const date = parseIsoDate(getCellValue(row, "Recorded At (ISO)") || getCellValue(row, "Date"));
+          const source = String(getCellValue(row, "Source") ?? "").trim();
+          if (!date || !source) return [];
+          return [{ id: idFor(row, "Income ID"), date, source, category: String(getCellValue(row, "Category") || "Other"), amount: toNumber(getCellValue(row, "Amount")), note: String(getCellValue(row, "Note") ?? "") }];
         });
         const withdrawals: Withdrawal[] = parseRows("Withdrawals").flatMap((row) => {
           const date = parseIsoDate(getCellValue(row, "Recorded At (ISO)") || getCellValue(row, "Date"));
@@ -481,7 +536,7 @@ export const importFinanceFromExcel = (file: File): Promise<FinanceImport> => {
         const profile = profileName && profileEmail && profileCreatedAt
           ? { name: profileName, email: profileEmail, createdAt: profileCreatedAt }
           : undefined;
-        resolve({ profile, transactions, investments, expenses, withdrawals, defaultCostSchedules, lockedMonths, settings });
+        resolve({ profile, transactions, investments, expenses, incomes, withdrawals, defaultCostSchedules, lockedMonths, settings });
       } catch (error) {
         reject(error);
       }

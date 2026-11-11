@@ -11,20 +11,16 @@ export const getInvestmentTotal = (user: UserAccount): number => {
 
 /** Cash proceeds from exited holdings, counted once they leave the portfolio. */
 export const getInvestmentProceeds = (user: UserAccount): number => {
-  const linkedProceeds = new Map(
-    (user.withdrawals ?? [])
-      .filter((entry) => entry.method === "investment" && entry.sourceInvestmentId)
-      .map((entry) => [entry.sourceInvestmentId!, entry.amount]),
+  const optedInInvestmentIds = new Set(
+    (user.investments ?? [])
+      .filter((investment) => investment.isClosed && investment.withdrawalRecorded)
+      .map((investment) => investment.id),
   );
-
-  return (user.investments ?? []).reduce((sum, investment) => {
-    if (!investment.isClosed) return sum;
-    const proceeds = linkedProceeds.get(investment.id)
-      ?? (investment.exitPrice != null
-        ? investment.exitPrice * (investment.quantity ?? 1)
-        : investment.currentValue);
-    return sum + proceeds;
-  }, 0);
+  return (user.withdrawals ?? [])
+    .filter((entry) => entry.method === "investment"
+      && entry.status === "completed"
+      && Boolean(entry.sourceInvestmentId && optedInInvestmentIds.has(entry.sourceInvestmentId)))
+    .reduce((sum, entry) => sum + entry.amount, 0);
 };
 
 export const getExpenseTotal = (user: UserAccount): number => {
@@ -37,13 +33,11 @@ export const getExpenseTotal = (user: UserAccount): number => {
  * manual rebalance saved in Settings.
  */
 export const calculateCurrentBalance = (user: UserAccount): number => {
-  const totalProfit = user.transactions
-    .filter(t => t.type === "profit")
-    .reduce((sum, t) => sum + t.amount, 0);
-
-  const totalLoss = user.transactions
-    .filter(t => t.type === "loss")
-    .reduce((sum, t) => sum + t.amount, 0);
+  const { totalProfit, totalLoss } = user.transactions.reduce((totals, transaction) => {
+    if (transaction.type === "profit") totals.totalProfit += transaction.amount;
+    else if (transaction.type === "loss") totals.totalLoss += transaction.amount;
+    return totals;
+  }, { totalProfit: 0, totalLoss: 0 });
 
   return user.startingBalance + totalProfit - totalLoss - getExpenseTotal(user) + (user.balanceAdjustment ?? 0);
 };
@@ -72,15 +66,17 @@ export const getAuthoritativeBalance = (user: UserAccount): number => {
  * Calculate comprehensive balance statistics used by Dashboard and other pages.
  */
 export const calculateBalanceStats = (user: UserAccount) => {
-  const totalProfit = user.transactions
-    .filter(t => t.type === "profit")
-    .reduce((sum, t) => sum + t.amount, 0);
+  const { totalProfit, totalLoss } = user.transactions.reduce((totals, transaction) => {
+    if (transaction.type === "profit") totals.totalProfit += transaction.amount;
+    else if (transaction.type === "loss") totals.totalLoss += transaction.amount;
+    return totals;
+  }, { totalProfit: 0, totalLoss: 0 });
 
-  const totalLoss = user.transactions
-    .filter(t => t.type === "loss")
-    .reduce((sum, t) => sum + t.amount, 0);
-
-  const currentBalance = getAuthoritativeBalance(user);
+  const investmentTotal = getInvestmentTotal(user);
+  const hasManualBalance = user.currentBalance != null && user.currentBalance >= 0;
+  const currentBalance = (hasManualBalance
+    ? (user.currentBalance ?? 0)
+    : user.startingBalance + totalProfit - totalLoss - getExpenseTotal(user) + (user.balanceAdjustment ?? 0)) + investmentTotal;
   const netPerformance = currentBalance - user.startingBalance;
 
   return {
@@ -89,7 +85,7 @@ export const calculateBalanceStats = (user: UserAccount) => {
     currentBalance,
     netPerformance,
     startingBalance: user.startingBalance,
-    investmentTotal: getInvestmentTotal(user),
+    investmentTotal,
     investmentProceeds: getInvestmentProceeds(user),
   };
 };

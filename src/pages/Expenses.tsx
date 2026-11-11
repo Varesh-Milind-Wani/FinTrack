@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { Plus, Pencil, ReceiptText, Trash2, X } from "lucide-react";
 import type { Expense, UserAccount } from "../types/finance";
 import { formatCurrency } from "../utils/money";
+import { usePersistentState } from "../hooks/usePersistentState";
+import { useAppDialog } from "../components/AppDialog";
 
 interface Props {
   user: UserAccount;
@@ -9,28 +11,33 @@ interface Props {
 }
 
 const categories = ["Food", "Transport", "Shopping", "Bills", "Health", "Entertainment", "Other"];
+const EMPTY_EXPENSES: Expense[] = [];
 const blank = (): Omit<Expense, "id"> => ({
   name: "", category: "Food", amount: 0,
   date: new Date().toISOString().slice(0, 10), note: "",
 });
 
 const Expenses = ({ user, onSave }: Props) => {
-  const expenses = user.expenses ?? [];
+  const { confirm } = useAppDialog();
+  const expenses = user.expenses ?? EMPTY_EXPENSES;
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Expense | null>(null);
   const [form, setForm] = useState(blank());
-  const [category, setCategory] = useState("all");
+  const [category, setCategory] = usePersistentState("expenses.category", "all");
 
   const visible = useMemo(() =>
     category === "all" ? expenses : expenses.filter((expense) => expense.category === category),
     [category, expenses]
   );
-  const total = expenses.reduce((sum, expense) => sum + expense.amount, 0);
-  const thisMonth = expenses.filter((expense) => {
-    const date = new Date(expense.date);
+  const { total, thisMonth } = useMemo(() => {
     const now = new Date();
-    return date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
-  }).reduce((sum, expense) => sum + expense.amount, 0);
+    return expenses.reduce((totals, expense) => {
+      totals.total += expense.amount;
+      const date = new Date(expense.date);
+      if (date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear()) totals.thisMonth += expense.amount;
+      return totals;
+    }, { total: 0, thisMonth: 0 });
+  }, [expenses]);
   const fmt = (value: number) => formatCurrency(value, user.currency);
 
   const openAdd = () => { setEditing(null); setForm(blank()); setModalOpen(true); };
@@ -47,8 +54,8 @@ const Expenses = ({ user, onSave }: Props) => {
     onSave({ ...user, expenses: next });
     setModalOpen(false);
   };
-  const remove = (id: string) => {
-    if (window.confirm("Delete this expense?")) onSave({ ...user, expenses: expenses.filter((expense) => expense.id !== id) });
+  const remove = async (id: string) => {
+    if (await confirm("Delete this expense?", "Delete expense")) onSave({ ...user, expenses: expenses.filter((expense) => expense.id !== id) });
   };
 
   return <div className="page-content expenses-page">

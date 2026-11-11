@@ -1,15 +1,15 @@
 import { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import Highcharts from "highcharts";
+import { lazy, Suspense } from "react";
 import HighchartsStock from "highcharts/highstock";
 import HighchartsReact from "highcharts-react-official";
 import type { HighchartsReactRefObject } from "highcharts-react-official";
 import ReactECharts from "echarts-for-react";
+import type { EChartsInstance } from "echarts-for-react";
 import {
   BarChart3,
-  CheckCircle2,
+  CalendarDays,
   Download,
-  Gauge,
-  ShieldAlert,
   TrendingDown,
   TrendingUp,
   Wallet,
@@ -17,11 +17,13 @@ import {
 
 import StatCard from "../components/StatCard";
 import ChartPanel from "../components/ChartPanel";
-import ChartFullscreenModal from "../components/ChartFullscreenModal";
+const ChartFullscreenModal = lazy(() => import("../components/ChartFullscreenModal"));
 
-import type { UserAccount } from "../types/finance";
+import type { InvestmentType, UserAccount } from "../types/finance";
 import { formatCurrency } from "../utils/money";
 import { calculateBalanceStats, getAuthoritativeBalance } from "../utils/balance";
+import { usePersistentState } from "../hooks/usePersistentState";
+import { groupCandles } from "../utils/candleGrouping";
 
 const HighchartsStockChart =
   (HighchartsReact as unknown as {
@@ -46,12 +48,29 @@ const chartRangeOptions = [
   { type: "all", count: 0, label: "All" },
 ] as const;
 
+const dashboardPerformancePeriods = [
+  { value: "all", label: "All Time" },
+  { value: "1m", label: "Last Month" },
+  { value: "3m", label: "Last 3 Months" },
+  { value: "6m", label: "Last 6 Months" },
+  { value: "1y", label: "Last Year" },
+] as const;
+
+const INVESTMENT_TYPE_LABELS: Record<InvestmentType, string> = {
+  stocks: "Stocks",
+  mutual_fund: "Mutual Funds",
+  crypto: "Crypto",
+  gold: "Gold",
+  real_estate: "Real Estate",
+  fd: "Fixed Deposit",
+  other: "Other",
+};
+const INVESTMENT_TYPE_OPTIONS: InvestmentType[] = ["stocks", "mutual_fund", "crypto", "gold", "real_estate", "fd", "other"];
+
 const ChartRangeDropdown = ({
-  chartRef,
   value,
   onChange,
 }: {
-  chartRef: React.RefObject<HighchartsReactRefObject | null>;
   value: number;
   onChange: (index: number) => void;
 }) => (
@@ -59,10 +78,9 @@ const ChartRangeDropdown = ({
     <span>Range</span>
     <select
       value={value}
-      aria-label="Chart date range"
+      aria-label="Candle interval"
       onChange={(event) => {
         const index = Number(event.target.value);
-        (chartRef.current?.chart as Highcharts.Chart & { rangeSelector?: { clickButton: (buttonIndex: number) => void } }).rangeSelector?.clickButton(index);
         onChange(index);
       }}
     >
@@ -79,6 +97,24 @@ const formatDateKey = (date: Date) => {
   const day = String(date.getDate()).padStart(2, "0");
 
   return `${year}-${month}-${day}`;
+};
+
+const applyCandleInterval = (chart: Highcharts.Chart | undefined, sourceData: readonly unknown[], intervalIndex: number) => {
+  if (!chart) return;
+  const candleSeries = chart.series.find((series) => series.type === "candlestick");
+  if (!candleSeries) return;
+  candleSeries.setData(groupCandles(sourceData, intervalIndex) as never[], false, false, false);
+  chart.xAxis[0]?.setExtremes(undefined, undefined, false, false);
+  chart.redraw();
+};
+
+const subtractCalendarMonths = (date: Date, months: number) => {
+  const result = new Date(date);
+  const day = result.getDate();
+  result.setDate(1);
+  result.setMonth(result.getMonth() - months);
+  result.setDate(Math.min(day, new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate()));
+  return result;
 };
 
 const parseLocalDate = (value: string) => {
@@ -155,8 +191,12 @@ interface Props {
 const Dashboard = ({ user, onAdd }: Props) => {
   const dashboardRef = useRef<HTMLDivElement>(null);
   const [currentHour, setCurrentHour] = useState(() => new Date().getHours());
+  const [dashboardPeriod, setDashboardPeriod] = usePersistentState<(typeof dashboardPerformancePeriods)[number]["value"]>("dashboard.performancePeriod", "all");
+  const [portfolioTypeFilter, setPortfolioTypeFilter] = usePersistentState<InvestmentType | "all">("dashboard.portfolioScenarioType", "all");
+  const [todayPnlIncludesCosts, setTodayPnlIncludesCosts] = useState(true);
   const wealthChartRef = useRef<HighchartsReactRefObject>(null);
-  const [wealthRange, setWealthRange] = useState(9);
+  const profitLossChartRef = useRef<EChartsInstance | null>(null);
+  const [wealthRange, setWealthRange] = usePersistentState("dashboard.wealthChartRange", 9);
   const [fullscreenChart, setFullscreenChart] = useState<
     | {
         title: string;
@@ -171,20 +211,14 @@ const Dashboard = ({ user, onAdd }: Props) => {
   >(null);
   const closeFullscreenChart = useCallback(() => setFullscreenChart(null), []);
 
+
   useEffect(() => {
     const timer = window.setInterval(() => setCurrentHour(new Date().getHours()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
 
-  useEffect(() => {
-    // Rebuilds start from the complete dataset, so keep the native select in
-    // sync when transactions are replaced or imported.
-    setWealthRange(9);
-  }, [user.transactions, user.createdAt]);
-
-  // The sidebar collapse animates the content width without resizing the
-  // browser window. Reflow Highcharts when its chart panels change size so the
-  // plot and navigator continue to use the full available width.
+  // Reflow embedded charts when dashboard panels change size (for example,
+  // when the sidebar collapses) so each chart uses its full panel width.
   useEffect(() => {
     const root = dashboardRef.current;
     if (!root || typeof ResizeObserver === "undefined") return;
@@ -209,6 +243,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
             chart.reflow();
           }
         });
+        profitLossChartRef.current?.resize();
       });
     });
 
@@ -223,6 +258,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
     (value: number) => formatCurrency(value, user.currency),
     [user.currency],
   );
+  const dashboardPeriodLabel = dashboardPerformancePeriods.find((period) => period.value === dashboardPeriod)?.label ?? "All Time";
 
   const stats = useMemo(() => {
     // Use authoritative balance (respects Settings manual override)
@@ -242,6 +278,15 @@ const Dashboard = ({ user, onAdd }: Props) => {
 
     // Recalculate net performance with actual balance
     const netPerformance = actualCurrentBalance - user.startingBalance;
+    // Peak values are based on recorded transactions, so their live result
+    // must use the same all-time transaction P&L basis.
+    const now = Date.now();
+    const transactionNetPnl = user.transactions.reduce((total, transaction) => {
+      if (transaction.type !== "profit" && transaction.type !== "loss") return total;
+      const timestamp = Date.parse(transaction.date);
+      if (!Number.isFinite(timestamp) || timestamp > now || !Number.isFinite(transaction.amount)) return total;
+      return total + (transaction.type === "profit" ? transaction.amount : -transaction.amount);
+    }, 0);
 
     // Calculate percentage based on starting balance (ROI)
     const performancePercentage =
@@ -249,10 +294,65 @@ const Dashboard = ({ user, onAdd }: Props) => {
         ? (netPerformance / balanceStats.startingBalance) * 100
         : 0;
 
+    const periodPerformance = (months: number) => {
+      const periodEnd = new Date();
+      const periodStart = subtractCalendarMonths(periodEnd, months);
+      periodStart.setHours(0, 0, 0, 0);
+      let net = 0;
+      let openingBalance = user.startingBalance;
+      let trades = 0;
+
+      user.transactions.forEach((transaction) => {
+        if (transaction.type !== "profit" && transaction.type !== "loss") return;
+        const timestamp = new Date(transaction.date).getTime();
+        if (!Number.isFinite(timestamp)) return;
+
+        const signedAmount = transaction.type === "profit" ? transaction.amount : -transaction.amount;
+        if (timestamp < periodStart.getTime()) {
+          openingBalance += signedAmount;
+        } else if (timestamp <= periodEnd.getTime()) {
+          net += signedAmount;
+          trades += 1;
+        }
+      });
+
+      return {
+        net,
+        trades,
+        openingBalance,
+        returnPercentage: openingBalance > 0 ? (net / openingBalance) * 100 : null,
+      };
+    };
+    const sixMonthPerformance = periodPerformance(6);
+    const oneYearPerformance = periodPerformance(12);
+
+    // Track the highest and lowest cumulative recorded P&L in date order.
+    let runningNet = 0;
+    let peakProfit = 0;
+    let peakLoss = 0;
+    [...user.transactions]
+      .filter((transaction) => (transaction.type === "profit" || transaction.type === "loss")
+        && Number.isFinite(Date.parse(transaction.date))
+        && Number.isFinite(transaction.amount)
+        && Date.parse(transaction.date) <= now)
+      .sort((left, right) => new Date(left.date).getTime() - new Date(right.date).getTime())
+      .forEach((transaction) => {
+        runningNet += transaction.type === "profit" ? transaction.amount : -transaction.amount;
+        peakProfit = Math.max(peakProfit, runningNet);
+        peakLoss = Math.min(peakLoss, runningNet);
+      });
+    const drawdownFromPeakPercent = peakProfit > 0
+      ? Math.max(0, ((peakProfit - transactionNetPnl) / peakProfit) * 100)
+      : 0;
+    const recoveryFromPeakLossPercent = peakLoss < 0
+      ? ((transactionNetPnl - peakLoss) / Math.abs(peakLoss)) * 100
+      : 0;
+
     return {
       ...balanceStats,
       currentBalance: actualCurrentBalance,
       netPerformance,
+      transactionNetPnl,
       profitCount,
       lossCount,
       totalTrades,
@@ -260,74 +360,235 @@ const Dashboard = ({ user, onAdd }: Props) => {
       avgProfitPerTrade,
       avgLossPerTrade,
       performancePercentage,
+      sixMonthPerformance,
+      oneYearPerformance,
+      peakProfit,
+      peakLoss,
+      drawdownFromPeakPercent,
+      recoveryFromPeakLossPercent,
     };
   }, [user.transactions, user.startingBalance, user.currentBalance, user.defaultCostAmount, user.investmentIncluded, user.investments]);
+
+  const periodStats = useMemo(() => {
+    const months = dashboardPerformancePeriods.find((period) => period.value === dashboardPeriod)?.value;
+    const monthCount = months === "1m" ? 1 : months === "3m" ? 3 : months === "6m" ? 6 : months === "1y" ? 12 : null;
+    const start = monthCount === null ? null : subtractCalendarMonths(new Date(), monthCount);
+    if (start) start.setHours(0, 0, 0, 0);
+    const startTime = start?.getTime() ?? Number.NEGATIVE_INFINITY;
+    const endTime = Date.now();
+    let openingBalance = user.startingBalance;
+    let totalProfit = 0;
+    let totalLoss = 0;
+    let profitCount = 0;
+    let lossCount = 0;
+    const dailyNet = new Map<string, { timestamp: number; signedAmount: number }>();
+    const realizedRValues: number[] = [];
+    const confidenceBands = [
+      { key: "low", label: "Lower confidence", range: "0–39", min: 0, max: 39, count: 0, wins: 0, net: 0, confidenceTotal: 0 },
+      { key: "medium", label: "Mid confidence", range: "40–69", min: 40, max: 69, count: 0, wins: 0, net: 0, confidenceTotal: 0 },
+      { key: "high", label: "Higher confidence", range: "70–100", min: 70, max: 100, count: 0, wins: 0, net: 0, confidenceTotal: 0 },
+    ];
+
+    user.transactions.forEach((transaction) => {
+      if (transaction.type !== "profit" && transaction.type !== "loss") return;
+      const date = parseLocalDate(transaction.date);
+      if (!date) return;
+      const timestamp = date?.getTime();
+      if (timestamp === undefined || !Number.isFinite(timestamp) || timestamp > endTime) return;
+      const signedAmount = transaction.type === "profit" ? transaction.amount : -transaction.amount;
+      if (timestamp < startTime) {
+        openingBalance += signedAmount;
+        return;
+      }
+      if (Number.isFinite(transaction.confidenceLevel) && transaction.confidenceLevel! >= 0 && transaction.confidenceLevel! <= 100) {
+        const band = confidenceBands.find((candidate) => transaction.confidenceLevel! >= candidate.min && transaction.confidenceLevel! <= candidate.max);
+        if (band) {
+          band.count += 1;
+          band.wins += transaction.type === "profit" ? 1 : 0;
+          band.net += signedAmount;
+          band.confidenceTotal += transaction.confidenceLevel!;
+        }
+      }
+      if (Number.isFinite(transaction.plannedRiskAmount) && transaction.plannedRiskAmount! > 0) {
+        realizedRValues.push(signedAmount / transaction.plannedRiskAmount!);
+      }
+      if (transaction.type === "profit") {
+        totalProfit += transaction.amount;
+        profitCount += 1;
+      } else {
+        totalLoss += transaction.amount;
+        lossCount += 1;
+      }
+      const key = formatDateKey(date);
+      const day = dailyNet.get(key) ?? { timestamp, signedAmount: 0 };
+      day.signedAmount += signedAmount;
+      dailyNet.set(key, day);
+    });
+
+    const periodDays = [...dailyNet.values()].sort((left, right) => left.timestamp - right.timestamp);
+    let cumulative = 0;
+    let peakProfit = 0;
+    let peakLoss = 0;
+    let maxDrawdown = 0;
+    let maxDrawdownPercent: number | null = openingBalance > 0 ? 0 : null;
+    for (const day of periodDays) {
+      cumulative += day.signedAmount;
+      peakProfit = Math.max(peakProfit, cumulative);
+      peakLoss = Math.min(peakLoss, cumulative);
+      const dailyDrawdown = peakProfit - cumulative;
+      maxDrawdown = Math.max(maxDrawdown, dailyDrawdown);
+      const peakEquity = openingBalance + peakProfit;
+      if (dailyDrawdown > 0 && peakEquity > 0) {
+        const drawdownPercent = (dailyDrawdown / peakEquity) * 100;
+        maxDrawdownPercent = Math.max(maxDrawdownPercent ?? 0, drawdownPercent);
+      }
+    }
+    const net = totalProfit - totalLoss;
+    const totalTrades = profitCount + lossCount;
+    const lowConfidenceBand = confidenceBands[0];
+    const highConfidenceBand = confidenceBands[2];
+    const highLowExpectancyGap = lowConfidenceBand.count >= 5 && highConfidenceBand.count >= 5
+      ? highConfidenceBand.net / highConfidenceBand.count - lowConfidenceBand.net / lowConfidenceBand.count
+      : null;
+    const sortedRValues = [...realizedRValues].sort((a, b) => a - b);
+    const positiveR = realizedRValues.filter((value) => value > 0);
+    const negativeR = realizedRValues.filter((value) => value < 0);
+    const positiveRTotal = positiveR.reduce((sum, value) => sum + value, 0);
+    const negativeRTotal = Math.abs(negativeR.reduce((sum, value) => sum + value, 0));
+    const rDistribution = [
+      { label: "< −2R", count: realizedRValues.filter((value) => value < -2).length, tone: "loss" },
+      { label: "−2R to −1R", count: realizedRValues.filter((value) => value >= -2 && value < -1).length, tone: "loss" },
+      { label: "−1R to 0", count: realizedRValues.filter((value) => value >= -1 && value < 0).length, tone: "loss" },
+      { label: "0R", count: realizedRValues.filter((value) => value === 0).length, tone: "flat" },
+      { label: "0 to 1R", count: realizedRValues.filter((value) => value > 0 && value < 1).length, tone: "profit" },
+      { label: "1R to 2R", count: realizedRValues.filter((value) => value >= 1 && value <= 2).length, tone: "profit" },
+      { label: "> 2R", count: realizedRValues.filter((value) => value > 2).length, tone: "profit" },
+    ];
+    const maxRBinCount = Math.max(1, ...rDistribution.map((bin) => bin.count));
+    return {
+      totalProfit,
+      totalLoss,
+      profitCount,
+      lossCount,
+      totalTrades,
+      winRate: totalTrades > 0 ? (profitCount / totalTrades) * 100 : 0,
+      avgProfitPerTrade: profitCount > 0 ? totalProfit / profitCount : 0,
+      avgLossPerTrade: lossCount > 0 ? totalLoss / lossCount : 0,
+      expectancy: totalTrades > 0 ? net / totalTrades : 0,
+      profitFactor: totalTrades === 0 ? null : totalLoss > 0 ? totalProfit / totalLoss : (totalProfit > 0 ? null : 0),
+      net,
+      returnPercentage: openingBalance > 0 ? (net / openingBalance) * 100 : null,
+      peakProfit,
+      peakLoss,
+      maxDrawdown,
+      maxDrawdownPercent,
+      recoveryFactor: maxDrawdown > 0 ? net / maxDrawdown : null,
+      drawdownFromPeakPercent: peakProfit > 0 ? Math.max(0, ((peakProfit - net) / peakProfit) * 100) : 0,
+      recoveryFromPeakLossPercent: peakLoss < 0 ? ((net - peakLoss) / Math.abs(peakLoss)) * 100 : 0,
+      conviction: {
+        bands: confidenceBands.map(({ key, label, range, count, wins, net, confidenceTotal }) => ({
+          key,
+          label,
+          range,
+          count,
+          wins,
+          net,
+          avgConfidence: count ? confidenceTotal / count : null,
+          winRate: count ? wins / count * 100 : null,
+          averageResult: count ? net / count : null,
+        })),
+        highLowExpectancyGap,
+      },
+      riskUnits: {
+        count: realizedRValues.length,
+        total: totalTrades,
+        expectancy: realizedRValues.length ? realizedRValues.reduce((sum, value) => sum + value, 0) / realizedRValues.length : null,
+        median: sortedRValues.length ? sortedRValues.length % 2 ? sortedRValues[(sortedRValues.length - 1) / 2] : (sortedRValues[sortedRValues.length / 2 - 1] + sortedRValues[sortedRValues.length / 2]) / 2 : null,
+        profitFactor: realizedRValues.length ? negativeRTotal > 0 ? positiveRTotal / negativeRTotal : positiveRTotal > 0 ? Number.POSITIVE_INFINITY : 0 : null,
+        averageWin: positiveR.length ? positiveRTotal / positiveR.length : null,
+        averageLoss: negativeR.length ? negativeR.reduce((sum, value) => sum + value, 0) / negativeR.length : null,
+        distribution: rDistribution.map((bin) => ({ ...bin, width: bin.count / maxRBinCount * 100 })),
+      },
+    };
+  }, [dashboardPeriod, user.startingBalance, user.transactions]);
+
+  const todayStats = useMemo(() => {
+    const todayKey = formatDateKey(new Date());
+    let net = 0;
+    let gross = 0;
+    let trades = 0;
+    user.transactions.forEach((transaction) => {
+      if (transaction.type !== "profit" && transaction.type !== "loss") return;
+      const date = parseLocalDate(transaction.date);
+      if (!date || formatDateKey(date) !== todayKey) return;
+      const signedNet = transaction.type === "profit" ? transaction.amount : -transaction.amount;
+      net += signedNet;
+      gross += signedNet + (transaction.costAmount ?? 0);
+      trades += 1;
+    });
+    return { net, gross, trades };
+  }, [user.transactions]);
+
+  const portfolioLens = useMemo(() => {
+    const openHoldings = (user.investments ?? []).filter((holding) => !holding.isClosed
+      && (portfolioTypeFilter === "all" || holding.type === portfolioTypeFilter));
+    const exposures = new Map<string, { value: number; holdings: number }>();
+    let marketValue = 0;
+    openHoldings.forEach((holding) => {
+      const value = Number.isFinite(holding.currentValue) ? Math.max(0, holding.currentValue) : 0;
+      marketValue += value;
+      const row = exposures.get(holding.type) ?? { value: 0, holdings: 0 };
+      row.value += value;
+      row.holdings += 1;
+      exposures.set(holding.type, row);
+    });
+    const largestHolding = [...openHoldings].sort((a, b) => b.currentValue - a.currentValue)[0] ?? null;
+    const largestHoldingValue = largestHolding && Number.isFinite(largestHolding.currentValue)
+      ? Math.max(0, largestHolding.currentValue)
+      : 0;
+    const exposureRows = [...exposures.entries()]
+      .map(([type, row]) => ({
+        type,
+        ...row,
+        share: marketValue > 0 ? row.value / marketValue * 100 : 0,
+      }))
+      .sort((a, b) => b.value - a.value);
+    const squaredExposureShares = openHoldings.reduce((sum, holding) => {
+      const value = Number.isFinite(holding.currentValue) ? Math.max(0, holding.currentValue) : 0;
+      const share = marketValue > 0 ? value / marketValue : 0;
+      return sum + share * share;
+    }, 0);
+    const scenarios = [-10, -5, 0, 5, 10].map((shock) => {
+      const change = openHoldings.reduce((sum, holding) => {
+        const value = Number.isFinite(holding.currentValue) ? Math.max(0, holding.currentValue) : 0;
+        const direction = holding.positionSide === "short" ? -1 : 1;
+        return sum + value * (shock / 100) * direction;
+      }, 0);
+      return { shock, change, resultingValue: Math.max(0, marketValue + change) };
+    });
+    return {
+      openHoldings,
+      marketValue,
+      exposureRows,
+      largestHolding,
+      largestHoldingShare: marketValue > 0 ? largestHoldingValue / marketValue * 100 : 0,
+      effectiveHoldingCount: squaredExposureShares > 0 ? 1 / squaredExposureShares : 0,
+      scenarios,
+    };
+  }, [user.investments, portfolioTypeFilter]);
 
   const {
     totalProfit,
     totalLoss,
     currentBalance,
     netPerformance,
-    performancePercentage,
-    profitCount,
-    lossCount,
-    totalTrades,
-    winRate,
-    avgProfitPerTrade,
-    avgLossPerTrade,
+    transactionNetPnl,
+    oneYearPerformance,
+    peakProfit,
+    peakLoss,
+    drawdownFromPeakPercent,
+    recoveryFromPeakLossPercent,
   } = stats;
-
-  const paceCoach = useMemo(() => {
-    const trades = user.transactions
-      .filter((transaction) => transaction.type === "profit" || transaction.type === "loss")
-      .slice()
-      .sort((left, right) => new Date(left.date).getTime() - new Date(right.date).getTime());
-    const recentTrades = trades.slice(-10);
-    const recentNet = recentTrades.reduce(
-      (total, trade) => total + (trade.type === "profit" ? trade.amount : -trade.amount),
-      0,
-    );
-    let consecutiveLosses = 0;
-    for (let index = trades.length - 1; index >= 0 && trades[index].type === "loss"; index -= 1) {
-      consecutiveLosses += 1;
-    }
-
-    const profitFactor = totalLoss > 0 ? totalProfit / totalLoss : totalProfit > 0 ? Infinity : 0;
-    if (trades.length < 10) {
-      return {
-        tone: "steady" as const,
-        title: "Build your sample first",
-        message: "Keep position size small until at least 10 recorded trades show a reliable pattern.",
-        detail: `${trades.length}/10 trades recorded · no size increase yet`,
-        icon: <Gauge size={19} />,
-      };
-    }
-    if (consecutiveLosses >= 3 || recentNet < 0 || winRate < 40 || profitFactor < 0.9) {
-      return {
-        tone: "warning" as const,
-        title: "Slow down and protect capital",
-        message: "Recent results are under pressure. Reduce risk per trade, pause after a loss streak, and review your setup before adding size.",
-        detail: `${consecutiveLosses} consecutive losses · recent 10 net ${formatMoney(recentNet)}`,
-        icon: <ShieldAlert size={19} />,
-      };
-    }
-    if (trades.length >= 20 && recentNet > 0 && winRate >= 55 && profitFactor >= 1.3) {
-      return {
-        tone: "positive" as const,
-        title: "Measured momentum",
-        message: "Your sample is consistently positive. If your written risk limit allows it, consider increasing size gradually by 5–10% and review again after 10 trades.",
-        detail: `${winRate.toFixed(0)}% win rate · ${profitFactor.toFixed(2)} profit factor`,
-        icon: <CheckCircle2 size={19} />,
-      };
-    }
-    return {
-      tone: "steady" as const,
-      title: "Keep your current pace",
-      message: "Results are mixed but controlled. Keep the same size and collect more data before changing your risk.",
-      detail: `${winRate.toFixed(0)}% win rate · ${trades.length} trades reviewed`,
-      icon: <Gauge size={19} />,
-    };
-  }, [formatMoney, lossCount, totalLoss, totalProfit, user.transactions, winRate]);
 
   const wealthData = useMemo(() => {
     const dailyNet: Record<string, number> = {};
@@ -552,7 +813,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
           height: 430,
           // Keep enough room for the right-side crosshair price flag so it
           // does not cover the last candle.
-          spacing: [14, 64, 22, 20],
+          spacing: [14, 84, 22, 20],
           zoomType: undefined,
           panning: { enabled: false },
           zooming: {
@@ -608,7 +869,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
           })),
         },
         navigator: {
-          enabled: true,
+          enabled: false,
           margin: 18,
           height: 72,
         },
@@ -617,10 +878,12 @@ const Dashboard = ({ user, onAdd }: Props) => {
         },
         xAxis: {
           type: "datetime",
+          ordinal: false,
+          maxPadding: 0.14,
           lineColor: "#252b36",
           crosshair: {
             width: 1,
-            color: "rgba(96, 165, 250, 0.65)",
+            color: "#ffffff",
             dashStyle: "Dash",
             snap: false,
           },
@@ -637,11 +900,11 @@ const Dashboard = ({ user, onAdd }: Props) => {
           },
           crosshair: {
             width: 1,
-            color: "rgba(96, 165, 250, 0.65)",
+            color: "#ffffff",
             dashStyle: "Dash",
             snap: false,
             label: {
-              enabled: true,
+              enabled: false,
               backgroundColor: "#2563eb",
               borderColor: "#60a5fa",
               borderRadius: 4,
@@ -691,10 +954,10 @@ const Dashboard = ({ user, onAdd }: Props) => {
         },
         plotOptions: {
           candlestick: {
-            color: "#ff5f70",
-            upColor: "#36d399",
-            lineColor: "#ffffff",
-            upLineColor: "#ffffff",
+            color: "#673AB7",
+            upColor: "#0D9F87",
+            lineColor: "#673AB7",
+            upLineColor: "#0D9F87",
             states: { hover: { enabled: false } },
           },
         },
@@ -703,12 +966,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
             type: "candlestick",
             name: "Balance",
             data: [makePoint(createdAt, currentBalance, currentBalance, currentBalance, currentBalance)],
-            dataGrouping: {
-              units: [
-                ["week", [1]],
-                ["month", [1, 2, 3, 4, 6]],
-              ],
-            },
+            dataGrouping: { enabled: false },
           },
         ],
       };
@@ -770,19 +1028,14 @@ const Dashboard = ({ user, onAdd }: Props) => {
         height: 430,
         // Reserve a right gutter for the y-axis crosshair label. Without it,
         // the label can sit on top of the final candle near the chart edge.
-        spacing: [14, 64, 24, 20],
+        spacing: [14, 84, 24, 20],
         style: { fontFamily: "Inter, system-ui, sans-serif" },
-        // Disable built-in zoom/pan — handled by attachChartInteraction
+        // Keep the embedded dashboard chart static; zooming is available in fullscreen.
         zoomType: undefined,
         panning: { enabled: false },
         zooming: { mouseWheel: { enabled: false } },
         reflow: true,
         resetZoomButton: { theme: { display: "none" } },
-        events: {
-          load: function(this: Highcharts.Chart) {
-            attachChartInteraction(this);
-          }
-        }
       },
       credits: { enabled: false },
       title: { text: undefined },
@@ -827,7 +1080,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
         })),
       },
       navigator: {
-        enabled: true,
+        enabled: false,
         height: 84,
         maskFill: "rgba(59, 130, 246, 0.12)",
         outlineColor: "rgba(59, 130, 246, 0.3)",
@@ -854,15 +1107,17 @@ const Dashboard = ({ user, onAdd }: Props) => {
         xAxis: { lineWidth: 1, lineColor: "rgba(59, 130, 246, 0.2)" },
         yAxis: { lineWidth: 1, lineColor: "rgba(59, 130, 246, 0.2)" },
       },
-      scrollbar: { enabled: true, height: 8, trackBorderColor: "rgba(59, 130, 246, 0.1)" },
+      scrollbar: { enabled: false },
       xAxis: {
         type: "datetime",
+        maxPadding: 0.1,
+        ordinal: false,
         lineColor: "rgba(59, 130, 246, 0.2)",
         tickColor: "rgba(59, 130, 246, 0.2)",
         gridLineColor: "rgba(59, 130, 246, 0.08)",
           crosshair: {
             width: 1,
-            color: "rgba(96, 165, 250, 0.7)",
+            color: "#ffffff",
             dashStyle: "Dash",
             snap: false,
         },
@@ -880,11 +1135,11 @@ const Dashboard = ({ user, onAdd }: Props) => {
         gridLineColor: "rgba(59, 130, 246, 0.08)",
         crosshair: {
           width: 1,
-          color: "rgba(96, 165, 250, 0.7)",
+          color: "#ffffff",
           dashStyle: "Dash",
           snap: false,
           label: {
-            enabled: true,
+            enabled: false,
             backgroundColor: "#2563eb",
             borderColor: "#60a5fa",
             borderRadius: 4,
@@ -949,10 +1204,10 @@ const Dashboard = ({ user, onAdd }: Props) => {
       },
       plotOptions: {
         candlestick: {
-          color: "#ef4444",
-          upColor: "#10b981",
-          lineColor: "#ef5350",
-          upLineColor: "#34d399",
+          color: "#673AB7",
+          upColor: "#0D9F87",
+          lineColor: "#673AB7",
+          upLineColor: "#0D9F87",
           states: { hover: { enabled: false } },
           borderRadius: 2,
           lineWidth: 1.5,
@@ -963,9 +1218,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
           type: "candlestick",
           name: "Balance",
           data: candles,
-          dataGrouping: {
-            units: [["week", [1]], ["month", [1, 2, 3, 4, 6]]],
-          },
+          dataGrouping: { enabled: false },
         },
       ],
     };
@@ -981,76 +1234,11 @@ const Dashboard = ({ user, onAdd }: Props) => {
     totalLoss,
   ]);
 
-  const attachChartInteraction = (chart: Highcharts.Chart) => {
-    // Charts are display-only. The panel click still opens fullscreen, but
-    // chart-level drag, wheel, and mouse listeners are intentionally disabled.
-    return;
-
-    let isDragging = false;
-    let dragStartX = 0, dragStartY = 0;
-    let dxMin = 0, dxMax = 0, dyMin = 0, dyMax = 0;
-
-    // Highcharts can consume wheel events even when mouse-wheel zoom is off.
-    // Forward chart wheel input to the page so scrolling never gets trapped.
-    const forwardWheelToPage = (event: WheelEvent) => {
-      const target = event.target instanceof Element ? event.target : null;
-      if (target?.closest(".chart-range-dropdown")) return;
-      event.preventDefault();
-      window.scrollBy({ top: event.deltaY, left: event.deltaX, behavior: "auto" });
-    };
-    chart.container.addEventListener("wheel", forwardWheelToPage, { capture: true, passive: false });
-
-    // Left-click drag → pan X and Y
-    chart.container.addEventListener('mousedown', (e: MouseEvent) => {
-      if (e.button !== 0) return;
-      const target = e.target instanceof Element ? e.target : null;
-      if (
-        target?.closest(
-          ".highcharts-button, .highcharts-range-selector-group, .highcharts-navigator, .highcharts-scrollbar"
-        )
-      ) {
-        return;
-      }
-      const point = chart.pointer.normalize(e);
-      if (!chart.isInsidePlot(point.chartX - chart.plotLeft, point.chartY - chart.plotTop)) {
-        return;
-      }
-      isDragging = true;
-      dragStartX = e.clientX;
-      dragStartY = e.clientY;
-      dxMin = typeof chart.xAxis[0].min === 'number' ? chart.xAxis[0].min : 0;
-      dxMax = typeof chart.xAxis[0].max === 'number' ? chart.xAxis[0].max : 1;
-      dyMin = typeof chart.yAxis[0].min === 'number' ? chart.yAxis[0].min : 0;
-      dyMax = typeof chart.yAxis[0].max === 'number' ? chart.yAxis[0].max : 1;
-      chart.container.style.cursor = 'grabbing';
-      chart.container.classList.add('dragging');
-      e.preventDefault();
-    });
-
-    document.addEventListener('mousemove', (e: MouseEvent) => {
-      if (!isDragging) return;
-      const xShift = -((e.clientX - dragStartX) / chart.plotWidth)  * (dxMax - dxMin);
-      const yShift =  ((e.clientY - dragStartY) / chart.plotHeight) * (dyMax - dyMin);
-      chart.xAxis[0].setExtremes(dxMin + xShift, dxMax + xShift, false);
-      chart.yAxis[0].setExtremes(dyMin + yShift, dyMax + yShift, true);
-    });
-
-    document.addEventListener('mouseup', () => {
-      if (!isDragging) return;
-      isDragging = false;
-      chart.container.style.cursor = 'pointer';
-      chart.container.classList.remove('dragging');
-    });
-
-    // Double-click → reset
-    chart.container.addEventListener('dblclick', () => {
-      chart.xAxis[0].setExtremes(undefined, undefined, false);
-      chart.yAxis[0].setExtremes(undefined, undefined, true);
-    });
-    Highcharts.addEvent(chart, "destroy", () => {
-      chart.container.removeEventListener("wheel", forwardWheelToPage, true);
-    });
-  };
+  useEffect(() => {
+    const sourceSeries = (candlestickOptions.series as Array<{ type?: string; data?: unknown[] }> | undefined)
+      ?.find((series) => series.type === "candlestick");
+    applyCandleInterval(wealthChartRef.current?.chart, sourceSeries?.data ?? [], wealthRange);
+  }, [candlestickOptions, wealthRange]);
 
   const wealthOptions: Highcharts.Options = {
     accessibility: { enabled: true },
@@ -1060,18 +1248,15 @@ const Dashboard = ({ user, onAdd }: Props) => {
       height: 300,
       style: { fontFamily: "Inter, system-ui, sans-serif" },
       animation: { duration: 450, easing: "easeOutQuart" } as Highcharts.AnimationOptionsObject,
-      spacing: [8, 12, 14, 12],
+      // The y-axis is on the right; preserve a clear gutter for currency
+      // labels so they never sit on top of the last wealth data point.
+      spacing: [8, 72, 14, 12],
       borderRadius: 0,
       zoomType: undefined,
       panning: { enabled: false },
       zooming: { mouseWheel: { enabled: false } },
       reflow: true,
       resetZoomButton: { theme: { display: "none" } },
-      events: {
-        load: function(this: Highcharts.Chart) {
-          attachChartInteraction(this);
-        }
-      }
     },
     title: { text: undefined },
     subtitle: { text: undefined },
@@ -1090,7 +1275,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
       tickColor: "rgba(59, 130, 246, 0.15)",
       crosshair: {
         width: 1.5,
-        color: "rgba(96, 165, 250, 0.5)",
+        color: "#ffffff",
         dashStyle: "Dash",
       },
       labels: {
@@ -1111,11 +1296,11 @@ const Dashboard = ({ user, onAdd }: Props) => {
         gridLineWidth: 1,
         crosshair: {
           width: 1,
-          color: "rgba(96, 165, 250, 0.7)",
+          color: "#ffffff",
           dashStyle: "Dash",
           snap: false,
           label: {
-            enabled: true,
+            enabled: false,
             backgroundColor: "#2563eb",
             borderColor: "#60a5fa",
             borderRadius: 4,
@@ -1248,11 +1433,20 @@ const Dashboard = ({ user, onAdd }: Props) => {
     // Better responsive behavior
     responsive: true,
     maintainAspectRatio: false,
+    axisPointer: {
+      show: false,
+      type: "cross",
+      triggerOn: "mousemove",
+      lineStyle: { color: "#ffffff", type: "dashed", width: 1 },
+      crossStyle: { color: "#ffffff", type: "dashed", width: 1 },
+      label: { show: false },
+    },
     grid: {
       left: 65,
-      right: 20,
+      right: 72,
       top: 10,
       bottom: 38,
+      containLabel: true,
       borderColor: "rgba(59, 130, 246, 0.12)",
     },
     legend: {
@@ -1273,10 +1467,10 @@ const Dashboard = ({ user, onAdd }: Props) => {
         show: false,
         type: "cross", 
         animation: false,
-        lineStyle: { color: "rgba(96,165,250,0.6)", type: "dashed", width: 1 },
-        crossStyle: { color: "rgba(96,165,250,0.6)", width: 1 },
+        lineStyle: { color: "#ffffff", type: "dashed", width: 1 },
+        crossStyle: { color: "#ffffff", width: 1 },
         label: {
-          show: true,
+          show: false,
           backgroundColor: "#1d4ed8",
           borderColor: "#60a5fa",
           borderWidth: 1,
@@ -1312,11 +1506,11 @@ const Dashboard = ({ user, onAdd }: Props) => {
       axisLine: { lineStyle: { color: "rgba(59, 130, 246, 0.2)", width: 1 } },
       axisLabel: { color: "#5e6b80", fontFamily: "Inter, sans-serif", fontSize: 12, fontWeight: 600 },
       boundaryGap: false,
-      gridLineColor: "rgba(59, 130, 246, 0.08)",
       axisPointer: {
         show: false,
+        lineStyle: { color: "#ffffff", type: "dashed", width: 1 },
         label: {
-          show: true,
+          show: false,
           backgroundColor: "#1d4ed8",
           borderColor: "#60a5fa",
           borderWidth: 1,
@@ -1339,8 +1533,9 @@ const Dashboard = ({ user, onAdd }: Props) => {
       axisLine: { lineStyle: { color: "rgba(59, 130, 246, 0.2)" } },
       axisPointer: {
         show: false,
+        lineStyle: { color: "#ffffff", type: "dashed", width: 1 },
         label: {
-          show: true,
+          show: false,
           backgroundColor: "#1d4ed8",
           borderColor: "#60a5fa",
           borderWidth: 1,
@@ -1401,7 +1596,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
   };
 
   return (
-    <div className="page-content" ref={dashboardRef}>
+    <div className="page-content dashboard-page" ref={dashboardRef}>
       {!user.transactions.length && (
         <div className="storage-info dashboard-intro">
           <div className="storage-icon">+</div>
@@ -1440,7 +1635,17 @@ const Dashboard = ({ user, onAdd }: Props) => {
         </div>
 
         <div className="dashboard-actions">
-
+          <label className="dashboard-period-control">
+            <span className="sr-only">Dashboard performance period</span>
+            <select
+              className="period-selector"
+              value={dashboardPeriod}
+              aria-label="Dashboard performance period"
+              onChange={(event) => setDashboardPeriod(event.target.value as typeof dashboardPeriod)}
+            >
+              {dashboardPerformancePeriods.map((period) => <option key={period.value} value={period.value}>{period.label}</option>)}
+            </select>
+          </label>
 
           <button className="secondary-button" onClick={async () => {
             const { exportFinanceToExcel } = await import("../utils/excel");
@@ -1462,9 +1667,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
           value={currentBalance}
           formatValue={(value) => formatCurrency(value, user.currency)}
           subtitle={
-            user.investmentIncluded && (user.investments ?? []).length > 0
-              ? `+${formatCurrency(Math.abs(netPerformance), user.currency)} net · incl. investments`
-              : `${netPerformance >= 0 ? "+" : "-"}${formatCurrency(Math.abs(netPerformance), user.currency)} net`
+            `${formatCurrency(Math.abs(netPerformance), user.currency)} ${netPerformance >= 0 ? "above" : "below"} starting balance${user.investmentIncluded && (user.investments ?? []).length > 0 ? " · includes investments" : ""}`
           }
           positive={netPerformance >= 0}
           icon={<Wallet size={19} />}
@@ -1473,9 +1676,9 @@ const Dashboard = ({ user, onAdd }: Props) => {
 
         <StatCard
           title="Total profit"
-          value={totalProfit}
+          value={periodStats.totalProfit}
           formatValue={(value) => formatCurrency(value, user.currency)}
-          subtitle="Profit recorded"
+          subtitle={`${periodStats.profitCount} profitable trades · ${dashboardPeriodLabel.toLowerCase()}`}
           positive
           icon={<TrendingUp size={19} />}
           colorVariant="green"
@@ -1483,9 +1686,9 @@ const Dashboard = ({ user, onAdd }: Props) => {
 
         <StatCard
           title="Total loss"
-          value={totalLoss}
+          value={periodStats.totalLoss}
           formatValue={(value) => formatCurrency(value, user.currency)}
-          subtitle="Loss recorded"
+          subtitle={`${periodStats.lossCount} losing trades · ${dashboardPeriodLabel.toLowerCase()}`}
           positive={false}
           icon={<TrendingDown size={19} />}
           colorVariant="red"
@@ -1493,31 +1696,31 @@ const Dashboard = ({ user, onAdd }: Props) => {
 
         <StatCard
           title="Net performance"
-          value={netPerformance}
+          value={periodStats.net}
           formatValue={(value) => formatCurrency(value, user.currency)}
-          subtitle={`${performancePercentage.toFixed(1)}% performance`}
-          positive={netPerformance >= 0}
+          subtitle={`${periodStats.returnPercentage === null ? "Return unavailable" : `${periodStats.returnPercentage >= 0 ? "+" : ""}${periodStats.returnPercentage.toFixed(1)}%`} · ${dashboardPeriodLabel}`}
+          positive={periodStats.net >= 0}
           icon={<BarChart3 size={19} />}
-          colorVariant={netPerformance >= 0 ? "green" : "amber"}
+          colorVariant={periodStats.net >= 0 ? "green" : "amber"}
         />
       </div>
 
       <div className="stats-grid" style={{ opacity: 0.9 }}>
         <StatCard
           title="Win Rate"
-          value={winRate}
+          value={periodStats.winRate}
           formatValue={(value) => `${value.toFixed(1)}%`}
-          subtitle={`${profitCount} wins, ${lossCount} losses`}
-          positive={winRate >= 50}
+          subtitle={`${periodStats.profitCount} wins, ${periodStats.lossCount} losses · ${dashboardPeriodLabel.toLowerCase()}`}
+          positive={periodStats.winRate >= 50}
           icon={<TrendingUp size={19} />}
           colorVariant="purple"
         />
 
         <StatCard
           title="Avg Profit/Trade"
-          value={avgProfitPerTrade}
+          value={periodStats.avgProfitPerTrade}
           formatValue={(value) => formatCurrency(value, user.currency)}
-          subtitle={`${profitCount} profitable trades`}
+          subtitle={`${periodStats.profitCount} profitable trades · ${dashboardPeriodLabel.toLowerCase()}`}
           positive
           icon={<TrendingUp size={19} />}
           colorVariant="green"
@@ -1525,9 +1728,9 @@ const Dashboard = ({ user, onAdd }: Props) => {
 
         <StatCard
           title="Avg Loss/Trade"
-          value={avgLossPerTrade}
+          value={periodStats.avgLossPerTrade}
           formatValue={(value) => formatCurrency(value, user.currency)}
-          subtitle={`${lossCount} losing trades`}
+          subtitle={`${periodStats.lossCount} losing trades · ${dashboardPeriodLabel.toLowerCase()}`}
           positive={false}
           icon={<TrendingDown size={19} />}
           colorVariant="red"
@@ -1535,26 +1738,77 @@ const Dashboard = ({ user, onAdd }: Props) => {
 
         <StatCard
           title="Total Trades"
-          value={totalTrades}
+          value={periodStats.totalTrades}
           formatValue={(value) => value.toFixed(0)}
-          subtitle={`${user.transactions.length} recorded`}
+          subtitle={`${dashboardPeriodLabel} transactions`}
           positive
           icon={<BarChart3 size={19} />}
           colorVariant="blue"
         />
       </div>
 
-      <section className={`trading-pace-coach ${paceCoach.tone}`} aria-live="polite">
-        <div className="trading-pace-icon" aria-hidden="true">{paceCoach.icon}</div>
-        <div className="trading-pace-content">
-          <div className="trading-pace-heading">
-            <span className="eyebrow">TRADING PACE COACH</span>
-            <strong>{paceCoach.title}</strong>
-          </div>
-          <p>{paceCoach.message}</p>
-          <span className="trading-pace-detail">{paceCoach.detail}</span>
-        </div>
-      </section>
+      <div className="stats-grid">
+        <StatCard
+          title="Today P&L"
+          value={todayPnlIncludesCosts ? todayStats.net : todayStats.gross}
+          formatValue={(value) => formatCurrency(value, user.currency)}
+          subtitle={`${todayStats.trades} ${todayStats.trades === 1 ? "trade" : "trades"} today · ${todayPnlIncludesCosts ? "after costs" : "before costs"}`}
+          positive={(todayPnlIncludesCosts ? todayStats.net : todayStats.gross) >= 0}
+          icon={<CalendarDays size={19} />}
+          colorVariant={(todayPnlIncludesCosts ? todayStats.net : todayStats.gross) >= 0 ? "green" : "red"}
+          headerAction={(
+            <label className="dashboard-pnl-cost-toggle" title="Include transaction costs in Today P&L">
+              <span>Costs</span>
+              <input
+                type="checkbox"
+                role="switch"
+                aria-label="Include costs in Today P&L"
+                checked={todayPnlIncludesCosts}
+                onChange={(event) => setTodayPnlIncludesCosts(event.target.checked)}
+              />
+            </label>
+          )}
+        />
+
+        <StatCard
+          title="1-Year Performance"
+          value={oneYearPerformance.net}
+          formatValue={(value) => formatCurrency(value, user.currency)}
+          subtitle={`${oneYearPerformance.trades} trades · ${oneYearPerformance.returnPercentage === null ? "return % unavailable (no opening balance)" : `${oneYearPerformance.returnPercentage >= 0 ? "+" : ""}${oneYearPerformance.returnPercentage.toFixed(1)}% vs. opening balance`}`}
+          positive={oneYearPerformance.net >= 0}
+          icon={<CalendarDays size={19} />}
+          colorVariant={oneYearPerformance.net >= 0 ? "green" : "red"}
+        />
+        <StatCard
+          title="Peak Profit"
+          value={peakProfit}
+          formatValue={(value) => formatCurrency(value, user.currency)}
+          valueCaption="Peak profit"
+          secondaryLabel="All-time trade result"
+          secondaryValue={formatCurrency(transactionNetPnl, user.currency)}
+          subtitle={peakProfit > 0
+            ? `${formatCurrency(Math.max(0, peakProfit - transactionNetPnl), user.currency)} below best · ${drawdownFromPeakPercent.toFixed(1)}% of best profit erased`
+            : "No profit recorded yet"}
+          positive={drawdownFromPeakPercent === 0}
+          icon={<TrendingUp size={19} />}
+          colorVariant="green"
+        />
+
+        <StatCard
+          title="Peak Loss"
+          value={peakLoss}
+          formatValue={(value) => formatCurrency(value, user.currency)}
+          valueCaption="Peak loss"
+          secondaryLabel="All-time trade result"
+          secondaryValue={formatCurrency(transactionNetPnl, user.currency)}
+          subtitle={peakLoss < 0
+            ? `Up ${formatCurrency(Math.max(0, transactionNetPnl - peakLoss), user.currency)} from worst · ${recoveryFromPeakLossPercent.toFixed(1)}% recovered`
+            : "No losses recorded yet"}
+          positive={recoveryFromPeakLossPercent > 0}
+          icon={<TrendingDown size={19} />}
+          colorVariant="red"
+        />
+      </div>
 
       <div className="charts-two-column dashboard-chart-grid">
         <ChartPanel
@@ -1572,7 +1826,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
             })
           }
         >
-          <ChartRangeDropdown chartRef={wealthChartRef} value={wealthRange} onChange={setWealthRange} />
+          <ChartRangeDropdown value={wealthRange} onChange={setWealthRange} />
           <HighchartsStockChart
             ref={wealthChartRef}
             highcharts={HighchartsStock}
@@ -1580,6 +1834,124 @@ const Dashboard = ({ user, onAdd }: Props) => {
             options={candlestickOptions}
           />
         </ChartPanel>
+
+        <section className="dashboard-risk-snapshot" aria-label="Selected-period risk and return metrics">
+          <div className="dashboard-risk-heading"><div><span>RISK &amp; RETURN</span><h2>Performance quality</h2><p>Trade-level results for {dashboardPeriodLabel.toLowerCase()}</p></div><small>Based on saved transactions</small></div>
+          <div className="dashboard-risk-metrics">
+            <article title="Total profitable transaction results divided by total losing transaction results for the selected period.">
+              <span>Profit factor</span>
+              <strong>{periodStats.profitFactor == null ? (periodStats.totalTrades ? "∞" : "—") : periodStats.profitFactor.toFixed(2)}</strong>
+              <small>{periodStats.profitFactor == null ? (periodStats.totalTrades ? "No losses recorded in this period" : "No trades in this period") : "Net gains per unit of net losses"}</small>
+            </article>
+            <article title="Average signed P&amp;L per recorded transaction in the selected period.">
+              <span>Expectancy per trade</span>
+              <strong className={periodStats.expectancy >= 0 ? "positive" : "negative"}>{periodStats.totalTrades ? formatCurrency(periodStats.expectancy, user.currency) : "—"}</strong>
+              <small>{periodStats.totalTrades ? `Average net result across ${periodStats.totalTrades} trades` : "No trades in this period"}</small>
+            </article>
+            <article title="Largest daily decline from a previous high-water mark during the selected period.">
+              <span>Maximum drawdown</span>
+              <strong className={periodStats.maxDrawdown > 0 ? "negative" : "positive"}>{periodStats.totalTrades ? formatCurrency(periodStats.maxDrawdown, user.currency) : "—"}</strong>
+              <small>{!periodStats.totalTrades ? "No trades in this period" : periodStats.maxDrawdownPercent == null ? "Peak-equity percentage unavailable" : `${periodStats.maxDrawdownPercent.toFixed(2)}% of peak equity`}</small>
+            </article>
+            <article title="Selected-period net result divided by maximum drawdown. This describes how net gains compare with the largest recorded decline.">
+              <span>Recovery factor</span>
+              <strong className={periodStats.recoveryFactor == null ? "neutral" : periodStats.recoveryFactor >= 0 ? "positive" : "negative"}>{periodStats.recoveryFactor == null ? "—" : `${periodStats.recoveryFactor.toFixed(2)}×`}</strong>
+              <small>{periodStats.recoveryFactor == null ? "No drawdown recorded in this period" : "Net result ÷ maximum drawdown"}</small>
+            </article>
+          </div>
+        </section>
+
+        {(user.investments ?? []).some((holding) => !holding.isClosed) && <section className="dashboard-portfolio-lens" aria-label="Portfolio exposure and scenario analysis">
+          <div className="dashboard-portfolio-lens-heading">
+            <div><span>PORTFOLIO ANALYTICS</span><h2>Portfolio mix &amp; what-if scenarios</h2><p>{portfolioTypeFilter === "all" ? "Open positions and estimated value changes" : `${INVESTMENT_TYPE_LABELS[portfolioTypeFilter]} holdings and estimated value changes`}</p></div>
+            <div className="dashboard-portfolio-heading-controls">
+              <label className="dashboard-portfolio-type-filter"><span>Asset type</span><select value={portfolioTypeFilter} onChange={(event) => setPortfolioTypeFilter(event.target.value as InvestmentType | "all")} aria-label="Filter portfolio scenarios by asset type">
+                <option value="all">All asset types</option>
+                {INVESTMENT_TYPE_OPTIONS.map((type) => <option key={type} value={type}>{INVESTMENT_TYPE_LABELS[type]}</option>)}
+              </select></label>
+              <div className="dashboard-portfolio-total"><small>{portfolioTypeFilter === "all" ? "All open holdings · saved values" : `${INVESTMENT_TYPE_LABELS[portfolioTypeFilter]} · saved values`}</small><strong>{formatCurrency(portfolioLens.marketValue, user.currency)}</strong></div>
+            </div>
+          </div>
+          <div className="dashboard-portfolio-lens-grid">
+            <div className="dashboard-exposure-panel">
+              <div className="dashboard-exposure-title"><strong>Portfolio mix</strong><span>{portfolioLens.openHoldings.length} open {portfolioLens.openHoldings.length === 1 ? "holding" : "holdings"}</span></div>
+              {portfolioLens.openHoldings.length === 0 && <p className="dashboard-portfolio-filter-empty">No open holdings for this asset type.</p>}
+              {portfolioLens.exposureRows.map((row) => <div className="dashboard-exposure-row" key={row.type}>
+                <div><span>{INVESTMENT_TYPE_LABELS[row.type as InvestmentType] ?? row.type.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase())}</span><b>{formatCurrency(row.value, user.currency)} <small>{row.share.toFixed(1)}%</small></b></div>
+                <i aria-hidden="true"><span style={{ width: `${Math.min(100, row.share)}%` }} /></i>
+              </div>)}
+              <div className="dashboard-exposure-insights">
+                <article><span>Largest position</span><strong>{portfolioLens.largestHolding?.name ?? "—"}</strong><small>{portfolioLens.largestHoldingShare.toFixed(1)}% of open value</small></article>
+                <article title="A value-weighted estimate of how evenly your current portfolio is spread. Higher values mean a more even spread."><span>Diversification equivalent</span><strong>{portfolioLens.effectiveHoldingCount.toFixed(1)} equal-sized holdings</strong><small>Higher means value is spread more evenly</small></article>
+              </div>
+            </div>
+            <div className="dashboard-scenario-panel">
+              <div className="dashboard-exposure-title"><strong>Estimated value after a move</strong><span>What-if scenarios</span></div>
+              <p>See how your saved total changes if all open positions move by the same percentage.</p>
+              <div className="dashboard-scenario-grid">{portfolioLens.scenarios.map((scenario) => <article className={scenario.shock < 0 ? "down" : scenario.shock > 0 ? "up" : "base"} key={scenario.shock}>
+                <span>{scenario.shock > 0 ? "+" : ""}{scenario.shock}%</span>
+                <strong>{scenario.shock === 0 ? formatCurrency(scenario.resultingValue, user.currency) : `${scenario.change > 0 ? "+" : "−"}${formatCurrency(Math.abs(scenario.change), user.currency)}`}</strong>
+                <small>{scenario.shock === 0 ? "Current value" : `Value after shock: ${formatCurrency(scenario.resultingValue, user.currency)}`}</small>
+              </article>)}</div>
+              <small className="dashboard-scenario-note">Illustrative only: applies one uniform shock to saved values; it is not a forecast and does not model asset-specific behavior, fees, or liquidity.</small>
+            </div>
+          </div>
+        </section>}
+
+
+
+        <section className="dashboard-conviction" aria-label="Confidence level outcomes">
+          <div className="dashboard-conviction-heading"><div><span>DECISION QUALITY</span><h2>Confidence and outcomes</h2><p>Compare saved confidence ratings with realized results · {dashboardPeriodLabel}</p></div><small>{periodStats.conviction.bands.reduce((sum, band) => sum + band.count, 0)} rated records</small></div>
+          <div className="dashboard-conviction-summary">
+            <article>
+              <span>High vs. low average net result</span>
+              <strong className={periodStats.conviction.highLowExpectancyGap == null ? "neutral" : periodStats.conviction.highLowExpectancyGap >= 0 ? "positive" : "negative"}>{periodStats.conviction.highLowExpectancyGap == null ? "Need more data" : `${periodStats.conviction.highLowExpectancyGap >= 0 ? "+" : ""}${formatCurrency(periodStats.conviction.highLowExpectancyGap, user.currency)} / record`}</strong>
+              <small>{periodStats.conviction.highLowExpectancyGap == null ? "Need at least 5 records in both confidence bands" : "Per-record average · higher confidence minus lower confidence"}</small>
+            </article>
+            <div className="dashboard-conviction-legend"><span><i className="outcome" /> Realized win rate</span><span><i className="confidence" /> Average saved confidence</span></div>
+          </div>
+          <div className="dashboard-conviction-bands">
+            {periodStats.conviction.bands.map((band) => <article key={band.key}>
+              <div className="dashboard-conviction-band-label"><strong>{band.label}</strong><small>{band.range} score</small></div>
+              <div className="dashboard-conviction-band-visual">
+                <div className="dashboard-conviction-track" role="img" aria-label={band.count ? `${band.label}: ${band.winRate!.toFixed(1)} percent realized win rate and ${band.avgConfidence!.toFixed(1)} average saved confidence rating` : `${band.label}: no rated records`}>
+                  <span className="outcome" style={{ width: `${band.winRate ?? 0}%` }} />
+                  {band.avgConfidence != null && <i className="confidence" style={{ left: `${band.avgConfidence}%` }} />}
+                </div>
+                <div className="dashboard-conviction-band-values">
+                  <b>{band.winRate == null ? "—" : `${band.winRate.toFixed(1)}% realized wins`}</b>
+                  <span>{band.avgConfidence == null ? "No ratings" : `${band.avgConfidence.toFixed(0)} avg rating`}</span>
+                  <span className={band.winRate == null || band.avgConfidence == null ? "rating-gap neutral" : `rating-gap ${band.winRate - band.avgConfidence >= 0 ? "positive" : "negative"}`}>
+                    {band.winRate == null || band.avgConfidence == null ? "Rating gap —" : `Rating gap ${band.winRate - band.avgConfidence >= 0 ? "+" : "−"}${Math.abs(band.winRate - band.avgConfidence).toFixed(0)} pts`}
+                  </span>
+                </div>
+              </div>
+              <div className="dashboard-conviction-band-result"><strong className={band.averageResult == null ? "neutral" : band.averageResult >= 0 ? "positive" : "negative"}>{band.averageResult == null ? "—" : formatCurrency(band.averageResult, user.currency)}</strong><span>avg net / record</span><small>{band.count} {band.count === 1 ? "record" : "records"}{band.count > 0 && band.count < 5 ? " · early sample" : ""}</small></div>
+            </article>)}
+          </div>
+          <p className="dashboard-conviction-note">Confidence is a subjective decision rating, not a probability. Rating gap compares realized win rate with the average rating for context only; it is not a calibration score. Bands with fewer than 5 records are early samples.</p>
+        </section>
+
+        {periodStats.riskUnits.count > 0 && <section className="dashboard-risk-unit-lab" aria-label="Risk-normalized trade performance">
+          <div className="dashboard-risk-unit-heading"><div><span>RISK-NORMALIZED PERFORMANCE</span><h2>R-multiple lab</h2><p>Measure trade outcomes against the amount you planned to risk · {dashboardPeriodLabel}</p></div><small>{periodStats.riskUnits.count} of {periodStats.riskUnits.total} records risk-tagged</small></div>
+          <>
+            <div className="dashboard-risk-unit-metrics">
+              <article><span>Expectancy</span><strong className={periodStats.riskUnits.expectancy! >= 0 ? "positive" : "negative"}>{periodStats.riskUnits.expectancy! >= 0 ? "+" : ""}{periodStats.riskUnits.expectancy!.toFixed(2)}R</strong><small>Average net result per risk-tagged record</small></article>
+              <article><span>Median outcome</span><strong className={periodStats.riskUnits.median! >= 0 ? "positive" : "negative"}>{periodStats.riskUnits.median! >= 0 ? "+" : ""}{periodStats.riskUnits.median!.toFixed(2)}R</strong><small>Middle outcome · less affected by outliers</small></article>
+              <article><span>R profit factor</span><strong>{periodStats.riskUnits.profitFactor === Number.POSITIVE_INFINITY ? "∞" : periodStats.riskUnits.profitFactor!.toFixed(2)}</strong><small>Sum of winning R ÷ absolute losing R</small></article>
+              <article><span>Average win / loss</span><strong>{periodStats.riskUnits.averageWin == null ? "—" : `+${periodStats.riskUnits.averageWin.toFixed(2)}R`} / {periodStats.riskUnits.averageLoss == null ? "—" : `${periodStats.riskUnits.averageLoss.toFixed(2)}R`}</strong><small>Average winning R · average losing R</small></article>
+              <article><span>Risk data coverage</span><strong>{periodStats.riskUnits.total ? `${(periodStats.riskUnits.count / periodStats.riskUnits.total * 100).toFixed(0)}%` : "—"}</strong><small>{periodStats.riskUnits.count} of {periodStats.riskUnits.total} records include planned risk</small></article>
+            </div>
+            <div className="dashboard-r-distribution">
+              <div className="dashboard-r-distribution-heading"><strong>Realized outcome distribution</strong><span>Each record = net P&amp;L ÷ planned risk</span></div>
+              <div className="dashboard-r-bins">{periodStats.riskUnits.distribution.map((bin) => <div className="dashboard-r-bin" key={bin.label}>
+                <div className="dashboard-r-bin-bar"><span className={bin.tone} style={{ height: `${bin.width}%` }} /></div>
+                <b>{bin.count}</b><small>{bin.label}</small>
+              </div>)}</div>
+            </div>
+          </>
+          <p className="dashboard-risk-unit-note">R-multiple normalizes gains and losses by each trade’s own planned risk, so differently sized records can be compared. It is only as reliable as the risk amounts entered; it does not infer stops or assume a risk amount for older trades.</p>
+        </section>}
 
         <ChartPanel
           className="dashboard-overview-chart"
@@ -1594,26 +1966,36 @@ const Dashboard = ({ user, onAdd }: Props) => {
             })
           }
         >
-          <EChartsChart
-            option={profitLossTrendOption}
-            style={{ height: 300, width: "100%" }}
-            notMerge
-            lazyUpdate
-          />
+          <div className="dashboard-profit-loss-chart">
+            <EChartsChart
+              option={profitLossTrendOption}
+              onChartReady={(instance) => {
+                profitLossChartRef.current = instance;
+                requestAnimationFrame(() => instance.resize());
+              }}
+              style={{ height: 300, width: "100%" }}
+              notMerge
+              lazyUpdate
+            />
+          </div>
         </ChartPanel>
       </div>
 
-      <ChartFullscreenModal
-        open={Boolean(fullscreenChart)}
-        title={fullscreenChart?.title ?? ""}
-        subtitle={fullscreenChart?.subtitle ?? ""}
-        kind={fullscreenChart?.kind ?? "highcharts"}
-        highchartsOptions={fullscreenChart?.highchartsOptions}
-        stockOptions={fullscreenChart?.stockOptions}
-        defaultChartMode={fullscreenChart?.defaultChartMode}
-        echartsOption={fullscreenChart?.echartsOption}
-        onClose={closeFullscreenChart}
-      />
+      {fullscreenChart && (
+        <Suspense fallback={null}>
+        <ChartFullscreenModal
+          open
+          title={fullscreenChart.title}
+          subtitle={fullscreenChart.subtitle}
+          kind={fullscreenChart.kind}
+          highchartsOptions={fullscreenChart.highchartsOptions}
+          stockOptions={fullscreenChart.stockOptions}
+          defaultChartMode={fullscreenChart.defaultChartMode}
+          echartsOption={fullscreenChart.echartsOption}
+          onClose={closeFullscreenChart}
+        />
+        </Suspense>
+      )}
     </div>
   );
 };
