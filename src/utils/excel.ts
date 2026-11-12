@@ -11,7 +11,14 @@ export interface FinanceImport {
   withdrawals: Withdrawal[];
   defaultCostSchedules: DefaultCostSchedule[];
   lockedMonths: string[];
-  settings?: Pick<UserAccount, "startingBalance" | "startingBalanceLocked" | "startingBalancePasswordHash" | "startingBalancePasswordSalt" | "currency" | "defaultCostAmount" | "expenseIncludedByDefault" | "currentBalance" | "balanceAdjustment" | "investmentIncluded" | "expenseTrackingEnabled" | "costLocked">;
+  // Keep this aligned with the account settings stored in UserAccount. The
+  // password used to sign in is deliberately excluded from portable backups.
+  settings?: Pick<UserAccount,
+    "startingBalance" | "startingBalanceLocked" | "startingBalancePasswordHash" |
+    "startingBalancePasswordSalt" | "currency" | "defaultCostAmount" |
+    "expenseIncludedByDefault" | "currentBalance" | "balanceAdjustment" |
+    "investmentIncluded" | "expenseTrackingEnabled" | "costLocked"
+  >;
 }
 
 type ExcelRow = Record<string, unknown>;
@@ -263,6 +270,7 @@ export const exportFinanceToExcel = (user: UserAccount) => {
     ["Starting Balance Locked", user.startingBalanceLocked ?? false],
     ["Starting Balance PIN Hash", user.startingBalancePasswordHash ?? ""],
     ["Starting Balance PIN Salt", user.startingBalancePasswordSalt ?? ""],
+    ["Manual Current Balance", user.currentBalance ?? ""],
     ["Currency", user.currency],
     ["Default Cost Amount", user.defaultCostAmount],
     ["Expense Included By Default", user.expenseIncludedByDefault],
@@ -271,6 +279,9 @@ export const exportFinanceToExcel = (user: UserAccount) => {
     ["Cost Locked", user.costLocked ?? false],
     ["Balance Adjustment", user.balanceAdjustment ?? 0],
     ["Locked Months (JSON)", JSON.stringify(user.lockedMonths ?? [])],
+    ["Account Name", user.name],
+    ["Account Email", user.email],
+    ["Account Created At (ISO)", user.createdAt],
   ]);
 
   summarySheet["!cols"] = [

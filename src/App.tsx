@@ -160,13 +160,13 @@ const App = () => {
     const scheduleNextDay = (now: Date) => {
       const nextReminder = new Date(now);
       nextReminder.setDate(nextReminder.getDate() + 1);
-      nextReminder.setHours(19, 0, 0, 0);
+      nextReminder.setHours(19, 45, 0, 0);
       reminderTimer = window.setTimeout(showDailyReminder, Math.max(1000, nextReminder.getTime() - now.getTime()));
     };
     function showDailyReminder() {
       const now = new Date();
       const reminderTime = new Date(now);
-      reminderTime.setHours(19, 0, 0, 0);
+      reminderTime.setHours(19, 45, 0, 0);
       if (now < reminderTime) {
         reminderTimer = window.setTimeout(showDailyReminder, reminderTime.getTime() - now.getTime());
         return;
