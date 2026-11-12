@@ -300,7 +300,7 @@ const Chat = ({ onAddTransaction, user }: ChatProps) => {
       id: crypto.randomUUID(),
       role: "assistant",
       content: `✅ Transaction added! ${pendingTransaction.type === "profit" ? "📈" : "📉"} ${pendingTransaction.type.toUpperCase()} of ${formatCurrency(pendingTransaction.amount, user.currency)}${
-        costIncluded ? ` (after brokerage: ${formatCurrency(netAmount, user.currency)})` : ""
+        costIncluded ? ` (after brokerage: ${formatCurrency(getPendingNetAmount(), user.currency)})` : ""
       }`,
       timestamp: new Date(),
       type: "text",

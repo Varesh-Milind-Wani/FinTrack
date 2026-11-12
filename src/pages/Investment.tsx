@@ -94,7 +94,6 @@ const InvestmentPage = ({ user, onSave }: Props) => {
   }), [investments, filterType, filterStatus, deferredHoldingsSearch]);
   const stats = useMemo(() => {
     const summary = filtered.reduce((totals, item) => {
-      const value = getInvestmentValue(item);
       const pnl = getInvestmentPnl(item);
       totals.historicalInvested += item.amount;
       if (item.isClosed) {
