@@ -29,6 +29,7 @@ import { createBalancePinSalt, hashBalancePin, verifyBalancePin } from "../utils
 import { usePersistentState } from "../hooks/usePersistentState";
 import { useAppDialog } from "../components/AppDialog";
 import { createApplicationBackup, readApplicationBackupFile, restoreApplicationBackup } from "../utils/applicationBackup";
+import { exportApplicationBackupExcel, readApplicationBackupExcelFile } from "../utils/applicationBackupExcel";
 
 interface Props {
   user: UserAccount;
@@ -38,6 +39,7 @@ interface Props {
 const Settings = ({ user, onSave }: Props) => {
   const { alert: showAlert, confirm: showConfirm } = useAppDialog();
   const backupInputRef = useRef<HTMLInputElement>(null);
+  const excelBackupInputRef = useRef<HTMLInputElement>(null);
   const [backupStatus, setBackupStatus] = useState<string | null>(null);
   const currentBalance = useMemo(() => {
     return getAuthoritativeBalance(user);
@@ -383,11 +385,22 @@ const Settings = ({ user, onSave }: Props) => {
     }
   };
 
-  const handleImportApplicationData = async (file?: File) => {
+  const handleExportApplicationExcel = () => {
+    try {
+      const counts = exportApplicationBackupExcel();
+      setBackupStatus(`Complete Excel backup downloaded: ${counts.accounts} accounts, ${counts.transactions} trades, ${counts.investments} investments, ${counts.expenses} expenses, ${counts.incomes} income entries, ${counts.withdrawals} withdrawals, ${counts.costSchedules} cost schedules, and ${counts.storageKeys} full-app data keys.`);
+    } catch (error) {
+      setBackupStatus(error instanceof Error ? error.message : "Could not export application data to Excel.");
+    }
+  };
+
+  const handleImportApplicationData = async (file?: File, format: "json" | "excel" = "json") => {
     if (!file) return;
     setBackupStatus(null);
     try {
-      const validated = await readApplicationBackupFile(file);
+      const validated = format === "excel"
+        ? await readApplicationBackupExcelFile(file)
+        : await readApplicationBackupFile(file);
       const { accounts, transactions, investments, expenses, incomes, withdrawals } = validated.recordCounts;
       const confirmed = await showConfirm(
         `Restore ${accounts} account${accounts === 1 ? "" : "s"} and all saved data (${transactions} trades, ${investments} investments, ${expenses} expenses, ${incomes} income entries, and ${withdrawals} withdrawals)? This replaces all FinTrack data in this browser. Export your current backup first if you may need it.`,
@@ -400,6 +413,7 @@ const Settings = ({ user, onSave }: Props) => {
       await showAlert(error instanceof Error ? error.message : "Could not restore this backup.", "Import failed");
     } finally {
       if (backupInputRef.current) backupInputRef.current.value = "";
+      if (excelBackupInputRef.current) excelBackupInputRef.current.value = "";
     }
   };
 
@@ -805,16 +819,23 @@ const Settings = ({ user, onSave }: Props) => {
         </div>
         <div className="application-data-actions">
           <article>
-            <div><strong>Export full backup</strong><p>Download a versioned JSON file with every account and all saved FinTrack data.</p></div>
-            <button type="button" className="secondary-button" onClick={handleExportApplicationData}><Download size={16} /> Export backup</button>
+            <div><strong>Export full backup</strong><p>Save every account and all saved FinTrack data as JSON or a readable Excel workbook.</p></div>
+            <div className="application-backup-buttons">
+              <button type="button" className="secondary-button" onClick={handleExportApplicationData}><Download size={16} /> Export JSON</button>
+              <button type="button" className="secondary-button" onClick={handleExportApplicationExcel}><Download size={16} /> Export Excel</button>
+            </div>
           </article>
           <article>
-            <div><strong>Import full backup</strong><p>Validate a FinTrack backup and restore it to this browser.</p></div>
+            <div><strong>Import full backup</strong><p>Restore a validated full FinTrack JSON or Excel backup to this browser.</p></div>
             <input ref={backupInputRef} className="application-backup-file" type="file" accept=".json,application/json" aria-label="Choose a FinTrack JSON backup" onChange={(event) => void handleImportApplicationData(event.target.files?.[0])} />
-            <button type="button" className="primary-button" onClick={() => backupInputRef.current?.click()}><Upload size={16} /> Choose backup</button>
+            <input ref={excelBackupInputRef} className="application-backup-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" aria-label="Choose a full FinTrack Excel backup" onChange={(event) => void handleImportApplicationData(event.target.files?.[0], "excel")} />
+            <div className="application-backup-buttons">
+              <button type="button" className="primary-button" onClick={() => backupInputRef.current?.click()}><Upload size={16} /> Import JSON</button>
+              <button type="button" className="primary-button" onClick={() => excelBackupInputRef.current?.click()}><Upload size={16} /> Import Excel</button>
+            </div>
           </article>
         </div>
-        <p className="application-backup-notice"><ShieldCheck size={15} /> Backup files include account credentials and PIN verification data as well as financial records. Store the file somewhere private.</p>
+        <p className="application-backup-notice"><ShieldCheck size={15} /> Full backups include account credentials, PIN verification data, financial records, preferences, and saved views. Store backup files somewhere private. Import replaces all FinTrack data in this browser.</p>
         {backupStatus && <div className={backupStatus.includes("downloaded") ? "field-hint" : "error-message"} role="status">{backupStatus}</div>}
       </section>
 

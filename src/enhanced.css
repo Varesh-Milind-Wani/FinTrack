@@ -6321,12 +6321,13 @@ html:has(.chart-fullscreen-overlay) {
 .application-data-actions strong { color: #e8edf5; font-size: 14px; }
 .application-data-actions p { margin: 5px 0 0; color: #91a0b5; font-size: 12px; line-height: 1.5; }
 .application-data-actions button { display: inline-flex; min-height: 40px; flex: 0 0 auto; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; }
+.application-backup-buttons { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .application-backup-file { display: none; }
 .application-backup-notice { display: flex; align-items: flex-start; gap: 8px; margin: 14px 0 0; color: #8796aa; font-size: 12px; line-height: 1.5; }
 .application-backup-notice svg { flex: 0 0 auto; margin-top: 1px; color: #8bb9ff; }
 .application-data-panel > .field-hint, .application-data-panel > .error-message { margin-top: 12px; }
 @media (max-width: 760px) { .application-data-actions { grid-template-columns: minmax(0, 1fr); } }
-@media (max-width: 480px) { .settings-page .application-data-panel { padding: 15px; } .application-data-actions article { align-items: flex-start; flex-direction: column; } .application-data-actions button { width: 100%; } }
+@media (max-width: 480px) { .settings-page .application-data-panel { padding: 15px; } .application-data-actions article { align-items: flex-start; flex-direction: column; } .application-backup-buttons { width: 100%; flex-direction: column; } .application-data-actions button { width: 100%; } }
 @media (max-width: 640px) {
   .settings-section-nav { flex-wrap: nowrap; overflow-x: auto; padding: 2px 2px 7px; scrollbar-width: thin; }
   .settings-section-nav a { flex: 0 0 auto; }
