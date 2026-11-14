@@ -9,6 +9,7 @@ import {
   Settings,
   TrendingDown,
   TrendingUp,
+  ReceiptText,
   MessageCircle,
   PiggyBank,
   FileBarChart,
@@ -159,6 +160,11 @@ const Sidebar = ({
           <span className="nav-label">Income</span>
         </button>
 
+        <button className={activePage === "expenses" ? "nav-button active" : "nav-button"}
+          onClick={() => onPageChange("expenses")} aria-label="Expenses" title={collapsed ? "Expenses" : undefined}>
+          <ReceiptText size={18} /><span className="nav-label">Expenses</span>
+        </button>
+
         <button
           className={
             activePage === "reports"
@@ -195,20 +201,21 @@ const Sidebar = ({
           }
           onClick={() => onPageChange("chat")}
           aria-label="Chat Assistant"
-          title={collapsed ? "Chat Assistant" : undefined}
+          title={collapsed ? "Chat Assistant · Beta" : undefined}
         >
           <MessageCircle size={18} />
           <span className="nav-label">Chat Assistant</span>
+          <span className="nav-beta-badge">Beta</span>
         </button>
 
         <button className={activePage === "ai-analysis" ? "nav-button active" : "nav-button"}
-          onClick={() => onPageChange("ai-analysis")} aria-label="AI Analysis" title={collapsed ? "AI Analysis" : undefined}>
-          <Sparkles size={18} /><span className="nav-label">AI Analysis</span>
+          onClick={() => onPageChange("ai-analysis")} aria-label="AI Analysis" title={collapsed ? "AI Analysis · Beta" : undefined}>
+          <Sparkles size={18} /><span className="nav-label">AI Analysis</span><span className="nav-beta-badge">Beta</span>
         </button>
 
         <button className={activePage === "scenario-lab" ? "nav-button active" : "nav-button"}
-          onClick={() => onPageChange("scenario-lab")} aria-label="Scenario Lab" title={collapsed ? "Scenario Lab" : undefined}>
-          <ChartCandlestick size={18} /><span className="nav-label">Scenario Lab</span>
+          onClick={() => onPageChange("scenario-lab")} aria-label="Scenario Lab" title={collapsed ? "Scenario Lab · Beta" : undefined}>
+          <ChartCandlestick size={18} /><span className="nav-label">Scenario Lab</span><span className="nav-beta-badge">Beta</span>
         </button>
 
         <button className={notificationsOpen ? "nav-button active" : "nav-button"}

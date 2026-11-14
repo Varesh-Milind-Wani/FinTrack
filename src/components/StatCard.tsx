@@ -16,6 +16,7 @@ interface StatCardProps {
   secondaryValue?: string;
   footerAction?: React.ReactNode;
   headerAction?: React.ReactNode;
+  onClick?: () => void;
 }
 
 const StatCard = ({
@@ -31,6 +32,7 @@ const StatCard = ({
   secondaryValue,
   footerAction,
   headerAction,
+  onClick,
 }: StatCardProps) => {
   const getIconColor = () => {
     switch (colorVariant) {
@@ -60,10 +62,20 @@ const StatCard = ({
         borderRadius: "var(--radius-lg)",
         padding: "var(--spacing-xl)",
         transition: "border-color 180ms ease, background 180ms ease, transform 180ms ease, box-shadow 180ms ease",
-        cursor: "default",
+        cursor: onClick ? "pointer" : "default",
         position: "relative",
         overflow: "hidden",
       }}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={onClick ? (event) => {
+        if ((event.target as HTMLElement).closest("button, input, label, select, textarea, a")) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onClick();
+        }
+      } : undefined}
       onMouseEnter={(e) => {
         (e.currentTarget as HTMLElement).style.borderColor = "var(--border-focus)";
         (e.currentTarget as HTMLElement).style.background = "linear-gradient(135deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%)";

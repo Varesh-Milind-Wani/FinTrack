@@ -32,3 +32,21 @@ export async function fetchDailyHistory(symbol: string, signal?: AbortSignal): P
   cache.set(normalizedSymbol, { expiresAt: Date.now() + CACHE_TTL_MS, bars });
   return bars;
 }
+
+/** Fetch the newest intraday bar from the same-origin market data proxy. */
+export async function fetchLatestMarketPrice(symbol: string, signal?: AbortSignal): Promise<{ price: number; updatedAt: string } | null> {
+  const baseUrl = getMarketHistoryProxyUrl();
+  if (!baseUrl) throw new Error("Market data proxy is not configured");
+  const url = new URL(baseUrl, window.location.origin);
+  if (url.origin !== window.location.origin) throw new Error("Market data must use the same-origin server proxy");
+  url.searchParams.set("symbol", symbol.trim().toUpperCase());
+  url.searchParams.set("interval", "1min");
+  url.searchParams.set("range", "1d");
+  const response = await fetch(url, { signal, headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error(`Market quote request failed (${response.status})`);
+  const payload = await response.json() as MarketHistoryResponse;
+  const bars = Array.isArray(payload.bars) ? payload.bars : [];
+  const latest = bars.filter((bar) => bar && typeof bar.date === "string" && Number.isFinite(bar.close) && bar.close > 0)
+    .sort((a, b) => Date.parse(b.date) - Date.parse(a.date))[0];
+  return latest ? { price: latest.close, updatedAt: latest.date } : null;
+}

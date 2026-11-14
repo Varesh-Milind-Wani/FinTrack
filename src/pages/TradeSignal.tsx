@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import Highcharts from "highcharts";
+import HighchartsReact from "highcharts-react-official";
 import {
   Activity,
   AlertTriangle,
@@ -19,6 +21,7 @@ import type { Transaction, UserAccount } from "../types/finance";
 import { formatCurrency } from "../utils/money";
 
 const WINDOW_SIZE = 10;
+const ClassicHighchartsChart = (HighchartsReact as unknown as { default?: typeof HighchartsReact }).default ?? HighchartsReact;
 const SIGNAL_RANGES = [
   { value: "last10", label: "Last 10 trades" },
   { value: "1m", label: "Last 1 month" },
@@ -70,6 +73,13 @@ const TradeSignal = ({ user }: { user: UserAccount }) => {
   const [fearGreedRange, setFearGreedRange] = useState<SignalRange>("last10");
   const [confidenceRange, setConfidenceRange] = useState<ConfidenceRange>("last10");
   const [tradesDialogOpen, setTradesDialogOpen] = useState(false);
+  const [fearGreedChartOpen, setFearGreedChartOpen] = useState(false);
+  useEffect(() => {
+    if (!fearGreedChartOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setFearGreedChartOpen(false); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [fearGreedChartOpen]);
 
   const analysis = useMemo(() => {
     const now = new Date();
@@ -253,6 +263,7 @@ const TradeSignal = ({ user }: { user: UserAccount }) => {
       fearGreedScore,
       fearGreedLabel,
       fearGreedWindowLabel,
+      fearGreedTrades,
       fearOutcomeCount,
       fearWins,
       fearLosses,
@@ -266,6 +277,43 @@ const TradeSignal = ({ user }: { user: UserAccount }) => {
   }, [user.transactions, money, fearGreedRange, confidenceRange]);
 
   const scoreTone = analysis.fearGreedScore == null ? "neutral" : analysis.fearGreedScore < 45 ? "fear" : analysis.fearGreedScore > 55 ? "greed" : "neutral";
+
+  const fearGreedChartOptions = useMemo<Highcharts.Options>(() => {
+    const qualifyingTrades = analysis.fearGreedTrades.filter((trade) => Math.abs(trade.amount) > 0);
+    const scorePoints: Array<[number, number]> = [];
+    const winRatePoints: Array<[number, number]> = [];
+    const winSharePoints: Array<[number, number]> = [];
+    qualifyingTrades.forEach((trade, index) => {
+      const sample = fearGreedRange === "last10"
+        ? qualifyingTrades.slice(Math.max(0, index - WINDOW_SIZE + 1), index + 1)
+        : qualifyingTrades.slice(0, index + 1);
+      const wins = sample.filter((item) => item.type === "profit");
+      const totalWins = wins.reduce((sum, item) => sum + Math.abs(item.amount), 0);
+      const totalLosses = sample.filter((item) => item.type === "loss").reduce((sum, item) => sum + Math.abs(item.amount), 0);
+      const totalPnl = totalWins + totalLosses;
+      const winRate = sample.length ? wins.length / sample.length * 100 : 0;
+      const winShare = totalPnl ? totalWins / totalPnl * 100 : 0;
+      const timestamp = Date.parse(trade.date);
+      scorePoints.push([timestamp, Math.round((winRate + winShare) / 2)]);
+      winRatePoints.push([timestamp, winRate]);
+      winSharePoints.push([timestamp, winShare]);
+    });
+    return {
+      chart: { type: "line", backgroundColor: "transparent", height: 480, zooming: { type: "x" } },
+      title: { text: undefined },
+      xAxis: { type: "datetime", title: { text: "Trade date" } },
+      yAxis: { min: 0, max: 100, tickInterval: 20, title: { text: "Score (%)" } },
+      tooltip: { shared: true, xDateFormat: "%e %b %Y", valueSuffix: "%", valueDecimals: 1 },
+      legend: { enabled: true },
+      credits: { enabled: false },
+      plotOptions: { series: { marker: { enabled: qualifyingTrades.length <= 40, radius: 3 } } },
+      series: [
+        { type: "line", name: "Personal outcome index", data: scorePoints, color: "#22d3a6", lineWidth: 3 },
+        { type: "line", name: "Win rate", data: winRatePoints, color: "#5b7cff" },
+        { type: "line", name: "Winning P&L share", data: winSharePoints, color: "#f6c453" },
+      ],
+    };
+  }, [analysis.fearGreedTrades, fearGreedRange]);
 
   return (
     <div className="trade-signal-page">
@@ -295,8 +343,8 @@ const TradeSignal = ({ user }: { user: UserAccount }) => {
           <div><span className="eyebrow">YOUR TRADE RESULTS</span><h2>Your trading results</h2><p>Based on the trades you recorded.</p></div>
         </header>
         <div className="trade-signal-index-grid">
-          <article className={`trade-signal-index-panel trade-signal-sentiment-panel ${scoreTone}`}>
-            <div className="trade-signal-index-panel-heading"><div><span className="eyebrow">FEAR &amp; GREED</span><h3>Personal outcome index</h3></div><label className="trade-signal-fear-period-filter"><span>Fear &amp; Greed period</span><select value={fearGreedRange} onChange={(event) => setFearGreedRange(event.target.value as SignalRange)} aria-label="Fear and Greed analysis period">{SIGNAL_RANGES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label></div>
+          <article className={`trade-signal-index-panel trade-signal-sentiment-panel ${scoreTone} trade-signal-index-clickable`} role="button" tabIndex={0} aria-label="Open personal outcome index chart" onClick={() => setFearGreedChartOpen(true)} onKeyDown={(event) => { if ((event.target as HTMLElement).closest("select, option, button, input, label")) return; if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setFearGreedChartOpen(true); } }}>
+            <div className="trade-signal-index-panel-heading"><div><span className="eyebrow">FEAR &amp; GREED</span><h3>Personal outcome index</h3></div><label className="trade-signal-fear-period-filter" onClick={(event) => event.stopPropagation()}><span>Fear &amp; Greed period</span><select value={fearGreedRange} onChange={(event) => setFearGreedRange(event.target.value as SignalRange)} aria-label="Fear and Greed analysis period">{SIGNAL_RANGES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label></div>
             <span className="trade-signal-index-period">{analysis.fearGreedWindowLabel}</span>
             <div className="trade-signal-fear-display">
               <svg width="240" height="150" viewBox="0 0 180 112" role="img" aria-label={`Personal Fear and Greed score ${analysis.fearGreedScore ?? "not available"} out of 100: ${analysis.fearGreedLabel}`}>
@@ -358,6 +406,14 @@ const TradeSignal = ({ user }: { user: UserAccount }) => {
         {analysis.trades.length ? <div className="trade-signal-table-wrap"><table className="trade-signal-table"><thead><tr><th>Date</th><th>Result</th><th>Direction</th><th>Entry</th><th>Exit</th><th>Quantity</th><th>Realized P&amp;L</th><th>Note</th></tr></thead><tbody>{analysis.trades.slice().reverse().map((trade) => <tr key={trade.id}><td>{formatDate(trade.date)}</td><td><span className={`trade-signal-result ${trade.type}`}>{trade.type === "profit" ? "Profit" : "Loss"}</span></td><td>{trade.optionType ?? "—"}</td><td>{trade.entryPrice == null ? "—" : money(trade.entryPrice)}</td><td>{trade.exitPrice == null ? "—" : money(trade.exitPrice)}</td><td>{trade.quantity ?? "—"}</td><td className={trade.type === "profit" ? "positive" : "negative"}>{money(signedPnl(trade))}</td><td className="trade-signal-note" title={trade.note}>{trade.note || "—"}</td></tr>)}</tbody></table></div> : <p className="trade-signal-empty"><CalendarDays size={16} /> Add or import completed transactions to build your trade signal.</p>}
       */}
 
+      {fearGreedChartOpen && <div className="fear-greed-chart-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setFearGreedChartOpen(false); }}>
+        <section className="fear-greed-chart-dialog" role="dialog" aria-modal="true" aria-labelledby="fear-greed-chart-title">
+          <header><div><span className="eyebrow">PERSONAL OUTCOME INDEX</span><h2 id="fear-greed-chart-title">Fear &amp; Greed performance</h2><p>{analysis.fearGreedWindowLabel} · {analysis.fearOutcomeCount} profit and loss results · classic chart</p></div><button type="button" aria-label="Close outcome index chart" onClick={() => setFearGreedChartOpen(false)}><X size={18} /></button></header>
+          <div className="fear-greed-chart-summary"><article><span>Current score</span><strong>{analysis.fearGreedScore ?? "—"}<small>/100</small></strong></article><article><span>Classification</span><strong>{analysis.fearGreedLabel}</strong></article><article><span>Net P&amp;L</span><strong>{money(analysis.fearWinTotal - analysis.fearLossTotal)}</strong></article><article><span>Wins · losses</span><strong>{analysis.fearWins.length} · {analysis.fearLosses.length}</strong></article></div>
+          {analysis.fearOutcomeCount ? <div className="fear-greed-chart-host"><ClassicHighchartsChart highcharts={Highcharts} options={fearGreedChartOptions} /></div> : <div className="fear-greed-chart-empty">No profit or loss results in this period.</div>}
+          <p className="fear-greed-chart-note">The index is the average of win rate and the share of total profit and loss represented by winning trades. For “Last 10 trades,” each point uses a rolling window of up to 10 results.</p>
+        </section>
+      </div>}
       {tradesDialogOpen && <TradeHistoryDialog
         trades={analysis.trades}
         rangeLabel={analysis.windowLabel}

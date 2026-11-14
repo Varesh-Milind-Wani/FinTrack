@@ -1,4 +1,4 @@
-import { Fragment, useDeferredValue, useMemo, useState } from "react";
+import { Fragment, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import ReactECharts from "echarts-for-react";
 import { ChartNoAxesCombined, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleDollarSign, Landmark, Pencil, Plus, Search, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Wallet, X } from "lucide-react";
 import type { Investment, InvestmentType, UserAccount } from "../types/finance";
@@ -6,6 +6,7 @@ import { formatCurrency } from "../utils/money";
 import { usePersistentState } from "../hooks/usePersistentState";
 import { useAppDialog } from "../components/AppDialog";
 import { getMonthKey, getMonthLabel } from "../utils/monthLocks";
+import { fetchLatestMarketPrice, getMarketHistoryProxyUrl } from "../services/marketHistory";
 
 const EChartsChart = (ReactECharts as unknown as { default?: typeof ReactECharts }).default ?? ReactECharts;
 // Keep each chart page readable and responsive even for very large portfolios.
@@ -70,6 +71,50 @@ const getFixedDepositRemainingTerm = (maturityDate: Date, today = new Date()) =>
 const InvestmentPage = ({ user, onSave }: Props) => {
   const { alert: showAlert, confirm: showConfirm } = useAppDialog();
   const investments = user.investments ?? EMPTY_INVESTMENTS;
+  const userRef = useRef(user);
+  const onSaveRef = useRef(onSave);
+  userRef.current = user;
+  onSaveRef.current = onSave;
+  const quoteSymbols = useMemo(() => [...new Set(investments
+    .filter((item) => item.type === "stocks" && !item.isClosed && item.marketSymbol?.trim())
+    .map((item) => item.marketSymbol!.trim().toUpperCase()))].sort(), [investments]);
+  const [quoteStatus, setQuoteStatus] = useState<"idle" | "live" | "unavailable">("idle");
+  const [lastQuoteRefresh, setLastQuoteRefresh] = useState<string | null>(null);
+  useEffect(() => {
+    if (quoteSymbols.length === 0) { setQuoteStatus("idle"); return; }
+    if (!getMarketHistoryProxyUrl()) { setQuoteStatus("unavailable"); return; }
+    let active = true;
+    const controller = new AbortController();
+    const refreshQuotes = async () => {
+      try {
+        const quotes = await Promise.all(quoteSymbols.map(async (symbol) => {
+          try { return [symbol, await fetchLatestMarketPrice(symbol, controller.signal)] as const; }
+          catch { return [symbol, null] as const; }
+        }));
+        if (!active) return;
+        const bySymbol = new Map(quotes);
+        let changed = false;
+        const nextInvestments = (userRef.current.investments ?? EMPTY_INVESTMENTS).map((item) => {
+          const symbol = item.marketSymbol?.trim().toUpperCase();
+          const quote = symbol ? bySymbol.get(symbol) : null;
+          if (item.type !== "stocks" || item.isClosed || !quote) return item;
+          const currentValue = quote.price * (item.quantity ?? 1);
+          if (item.marketPrice === quote.price && item.marketPriceUpdatedAt === quote.updatedAt && item.currentValue === currentValue) return item;
+          changed = true;
+          return { ...item, marketPrice: quote.price, marketPriceUpdatedAt: quote.updatedAt, currentValue };
+        });
+        const hasQuote = quotes.some(([, quote]) => quote != null);
+        setQuoteStatus(hasQuote ? "live" : "unavailable");
+        if (hasQuote) setLastQuoteRefresh(new Date().toISOString());
+        if (changed) onSaveRef.current({ ...userRef.current, investments: nextInvestments });
+      } catch {
+        if (active) setQuoteStatus("unavailable");
+      }
+    };
+    void refreshQuotes();
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") void refreshQuotes(); }, 60_000);
+    return () => { active = false; controller.abort(); window.clearInterval(timer); };
+  }, [quoteSymbols.join("|")]);
   const [showModal, setShowModal] = useState(false);
   const [showComparison, setShowComparison] = useState(false);
   const [comparisonSearch, setComparisonSearch] = useState("");
@@ -311,6 +356,10 @@ const InvestmentPage = ({ user, onSave }: Props) => {
   return <div className="page-content investment-page">
     <div className="page-heading investment-heading"><div><span className="eyebrow">WEALTH MANAGEMENT</span><h1>Investment portfolio</h1><p>See your holdings, performance, and long-term growth in one place.</p></div><div className="investment-heading-actions"><button type="button" className="secondary-button investment-comparison-button" onClick={() => setShowComparison(true)}><ChartNoAxesCombined size={16} /> Holdings comparison</button><button className="primary-button investment-add-button" onClick={openAdd}><Plus size={17} /> Add investment</button></div></div>
     <div className="investment-summary-context"><strong>Portfolio summary</strong><span>Based on {filtered.length} matching {filtered.length === 1 ? "holding" : "holdings"}</span></div>
+    {quoteSymbols.length > 0 && <div className={`investment-quote-status ${quoteStatus}`} role="status">
+      <span className="investment-quote-indicator" />
+      {quoteStatus === "live" ? `Market quotes updated${lastQuoteRefresh ? ` at ${new Date(lastQuoteRefresh).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""} · refreshes every minute while this page is open` : quoteStatus === "unavailable" ? "Live market quotes are unavailable. Configure the same-origin market data proxy to update symbols." : "Connecting to market data…"}
+    </div>}
     <div className="investment-summary-grid">
       <Summary label="Currently invested" value={fmt(stats.totalInvested)} detail={openInvestedBreakdown ? `${stats.openCount} open · ${openInvestedBreakdown}` : `${stats.openCount} open ${stats.openCount === 1 ? "holding" : "holdings"}`} icon={<Wallet size={19} />} kind="invested" />
       <Summary label="Portfolio value" value={fmt(stats.portfolioValue)} detail={`${fmt(stats.totalInvested)} invested · ${stats.unrealizedPnl >= 0 ? "+" : "−"}${fmt(Math.abs(stats.unrealizedPnl))} combined open P&L`} icon={<Landmark size={19} />} kind="value" />
@@ -346,7 +395,7 @@ const InvestmentPage = ({ user, onSave }: Props) => {
           <td>{item.quantity ?? 1}</td>
           <td className="investment-date">{date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
           <td className="investment-money">{fmt(item.amount)}</td>
-          <td className="investment-money">{fmt(displayedValue)}{item.type === "fd" && fdRemainingTerm && <small className="investment-fd-term">{fdRemainingTerm} · matures {fdMaturityDateLabel}</small>}</td>
+          <td className="investment-money">{fmt(displayedValue)}{item.type === "stocks" && !item.isClosed && item.marketPrice != null && <small className="investment-fd-term">{fmt(item.marketPrice)} per unit{item.marketPriceUpdatedAt ? ` · ${new Date(item.marketPriceUpdatedAt).toLocaleString()}` : ""}</small>}{item.type === "fd" && fdRemainingTerm && <small className="investment-fd-term">{fdRemainingTerm} · matures {fdMaturityDateLabel}</small>}</td>
           <td className={positive ? "investment-positive" : "investment-negative"}>{positive ? "+" : ""}{fmt(pnl)}{item.type === "fd" && <small className="investment-fd-pnl-caption">{fdRemainingTerm === "Matured" ? "Net P&L at maturity" : "Projected net P&L"}</small>}</td>
           <td className={positive ? "investment-positive" : "investment-negative"}>{positive ? "+" : ""}{pct.toFixed(2)}%</td>
           <td>{item.isClosed ? item.withdrawalRecorded ? <span className="investment-withdrawal-status recorded">{fmt(getInvestmentValue(item))}<small>Full sale proceeds</small></span> : <span className="investment-withdrawal-status">Not recorded</span> : <span className="investment-withdrawal-status unavailable">—</span>}</td>

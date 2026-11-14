@@ -38,6 +38,18 @@ const getBucketStart = (timestamp: number, interval: CandleInterval): number => 
   return new Date(startYear, 0, 1).getTime();
 };
 
+/** Return the complete local-calendar interval represented by a grouped candle. */
+export const getCandleWindow = (timestamp: number, intervalIndex: number) => {
+  const interval = CANDLE_INTERVALS[intervalIndex] ?? CANDLE_INTERVALS[CANDLE_INTERVALS.length - 1];
+  const start = getBucketStart(timestamp, interval);
+  const endExclusive = new Date(start);
+  if (interval.unit === "day") endExclusive.setDate(endExclusive.getDate() + interval.count);
+  else if (interval.unit === "week") endExclusive.setDate(endExclusive.getDate() + 7 * interval.count);
+  else if (interval.unit === "month") endExclusive.setMonth(endExclusive.getMonth() + interval.count);
+  else endExclusive.setFullYear(endExclusive.getFullYear() + interval.count);
+  return { start, end: endExclusive.getTime() - 60_000 };
+};
+
 /** Group chronological OHLC points while preserving first open, highest high, lowest low and last close. */
 export const groupCandles = (source: readonly unknown[], intervalIndex: number): OhlcCandle[] => {
   const interval = CANDLE_INTERVALS[intervalIndex] ?? CANDLE_INTERVALS[CANDLE_INTERVALS.length - 1];

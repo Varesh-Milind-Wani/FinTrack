@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChartCandlestick, LineChart, RotateCcw, X } from "lucide-react";
+import { ChartCandlestick, LineChart, MousePointer2, Percent, RotateCcw, Ruler, Square, TrendingUp, Undo2, X, Trash2 } from "lucide-react";
 import Highcharts from "highcharts";
 import HighchartsStock from "highcharts/highstock";
+import "highcharts/modules/accessibility";
 import HighchartsReact from "highcharts-react-official";
 import type { HighchartsReactRefObject } from "highcharts-react-official";
 import ReactECharts from "echarts-for-react";
 import type { EChartsInstance } from "echarts-for-react";
 import { usePersistentState } from "../hooks/usePersistentState";
-import { groupCandles } from "../utils/candleGrouping";
+import { getCandleWindow, groupCandles } from "../utils/candleGrouping";
 
 const HighchartsChart =
   (HighchartsReact as unknown as {
@@ -108,14 +109,36 @@ const getEchartsRangeStart = (option: Record<string, unknown>, index: number) =>
 
 type ChartKind = "highcharts" | "stock" | "echarts";
 type ChartMode = "classic" | "candlestick";
-type CandleReadout = { x: number; open: number; low: number; high: number; close: number };
+type CandleReadout = { x: number; start: number; end: number; open: number; low: number; high: number; close: number };
+type DrawingTool = "select" | "trendline" | "rectangle" | "horizontal" | "measure" | "fibonacci";
+type ChartDrawing = { id: string; tool: Exclude<DrawingTool, "select">; start: { x: number; y: number }; end: { x: number; y: number }; color: string; width: number };
+type DrawingHandle = { x: number; y: number; mode: "start" | "end" | "start-x-end-y" | "end-x-start-y" | "level" };
+type DrawingDrag = { id: string; original: ChartDrawing; pointerStart: { x: number; y: number }; mode: DrawingHandle["mode"] | "move" };
+const FIB_RETRACEMENT_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1] as const;
 
-const getCandleReadout = (point?: Highcharts.Point): CandleReadout | null => {
+const isChartDrawing = (value: unknown): value is ChartDrawing => {
+  if (!value || typeof value !== "object") return false;
+  const drawing = value as Partial<ChartDrawing>;
+  const pointIsValid = (point: unknown) => Boolean(point && typeof point === "object"
+    && Number.isFinite((point as { x?: unknown }).x) && Number.isFinite((point as { y?: unknown }).y));
+  return typeof drawing.id === "string"
+    && (drawing.tool === "trendline" || drawing.tool === "rectangle" || drawing.tool === "horizontal" || drawing.tool === "measure" || drawing.tool === "fibonacci")
+    && pointIsValid(drawing.start) && pointIsValid(drawing.end)
+    && typeof drawing.color === "string" && /^#[\da-f]{6}$/i.test(drawing.color)
+    && typeof drawing.width === "number" && drawing.width >= 1 && drawing.width <= 4;
+};
+
+const getCandleReadout = (point?: Highcharts.Point, intervalIndex = 0): CandleReadout | null => {
   if (!point) return null;
   const candle = point as Highcharts.Point & { open?: number; low?: number; high?: number; close?: number };
   if (![point.x, candle.open, candle.low, candle.high, candle.close].every((value) => typeof value === "number" && Number.isFinite(value))) return null;
-  return { x: point.x as number, open: candle.open as number, low: candle.low as number, high: candle.high as number, close: candle.close as number };
+  const x = point.x as number;
+  const window = getCandleWindow(x, intervalIndex);
+  return { x, ...window, open: candle.open as number, low: candle.low as number, high: candle.high as number, close: candle.close as number };
 };
+const formatCandleTime = (timestamp: number) => new Date(timestamp).toLocaleString("en-IN", {
+  day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
+});
 
 interface Props {
   open: boolean;
@@ -125,7 +148,9 @@ interface Props {
   highchartsOptions?: Highcharts.Options;
   stockOptions?: Highcharts.Options;
   defaultChartMode?: ChartMode;
+  drawingStorageKey?: string;
   echartsOption?: Record<string, unknown>;
+  timeInOutcome?: { profitPercent: number; lossPercent: number; profitDays: number; lossDays: number; totalDays: number };
   onClose: () => void;
 }
 
@@ -137,7 +162,9 @@ const ChartFullscreenModal = ({
   highchartsOptions,
   stockOptions,
   defaultChartMode = "classic",
+  drawingStorageKey: drawingScope,
   echartsOption,
+  timeInOutcome,
   onClose,
 }: Props) => {
   const chartRef = useRef<HighchartsReactRefObject>(null);
@@ -148,6 +175,84 @@ const ChartFullscreenModal = ({
   const [chartMode, setChartMode] =
     useState<ChartMode>(defaultChartMode);
   const [candleReadout, setCandleReadout] = useState<CandleReadout | null>(null);
+  const drawingStorageKey = `charts.drawings.${drawingScope ?? title}`;
+  const [drawings, setDrawings] = usePersistentState<ChartDrawing[]>(drawingStorageKey, []);
+  const [drawingTool, setDrawingTool] = useState<DrawingTool>("select");
+  const [drawingColor, setDrawingColor] = useState("#ef476f");
+  const [drawingWidth, setDrawingWidth] = useState(2);
+  const [drawingPreview, setDrawingPreview] = useState<ChartDrawing | null>(null);
+  const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
+  const safeDrawings = useMemo(() => Array.isArray(drawings) ? drawings.filter(isChartDrawing) : [], [drawings]);
+  const safeDrawingPreview = isChartDrawing(drawingPreview) ? drawingPreview : null;
+  const drawingsRef = useRef(drawings);
+  const drawingPreviewRef = useRef(safeDrawingPreview);
+  const drawingToolRef = useRef(drawingTool);
+  const drawingColorRef = useRef(drawingColor);
+  const drawingWidthRef = useRef(drawingWidth);
+  const selectedDrawingIdRef = useRef(selectedDrawingId);
+  const undoStackRef = useRef<ChartDrawing[][]>([]);
+  drawingsRef.current = safeDrawings;
+  drawingPreviewRef.current = safeDrawingPreview;
+  drawingToolRef.current = drawingTool;
+  drawingColorRef.current = drawingColor;
+  drawingWidthRef.current = drawingWidth;
+  selectedDrawingIdRef.current = selectedDrawingId;
+  const getLiveEchartsInstance = useCallback(() => {
+    const instance = echartsInstanceRef.current;
+    if (!instance) return null;
+    if (instance.isDisposed()) {
+      if (echartsInstanceRef.current === instance) echartsInstanceRef.current = null;
+      return null;
+    }
+    return instance;
+  }, []);
+
+  useEffect(() => {
+    if (!Array.isArray(drawings) || safeDrawings.length !== drawings.length) setDrawings(safeDrawings);
+  }, [drawings, safeDrawings, setDrawings]);
+  const commitDrawings = useCallback((next: ChartDrawing[]) => {
+    undoStackRef.current.push([...drawingsRef.current]);
+    if (undoStackRef.current.length > 100) undoStackRef.current.shift();
+    setDrawings(next);
+  }, [setDrawings]);
+  const undoDrawingChange = useCallback(() => {
+    const previous = undoStackRef.current.pop();
+    if (!previous) return;
+    setDrawings(previous);
+    if (selectedDrawingIdRef.current && !previous.some((drawing) => drawing.id === selectedDrawingIdRef.current)) {
+      setSelectedDrawingId(null);
+    }
+  }, [setDrawings]);
+  const deleteSelectedDrawing = useCallback(() => {
+    const selectedId = selectedDrawingIdRef.current;
+    if (!selectedId) return;
+    const next = drawingsRef.current.filter((drawing) => drawing.id !== selectedId);
+    if (next.length !== drawingsRef.current.length) commitDrawings(next);
+    selectedDrawingIdRef.current = null;
+    setSelectedDrawingId(null);
+  }, [commitDrawings]);
+  useEffect(() => {
+    if (!open || chartMode !== "candlestick") return;
+    const handleDrawingKeys = (event: KeyboardEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const activeElement = document.activeElement;
+      const isEditable = (element: Element | null) => Boolean(element?.closest("input, textarea, select, [contenteditable='true'], [role='textbox']"));
+      if (isEditable(target) || isEditable(activeElement instanceof Element ? activeElement : null)) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        event.stopPropagation();
+        undoDrawingChange();
+      } else if ((event.key === "Delete" || event.key === "Backspace") && selectedDrawingIdRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        deleteSelectedDrawing();
+      }
+    };
+    // Capture the key before chart/canvas handlers can consume it.
+    document.addEventListener("keydown", handleDrawingKeys, true);
+    return () => document.removeEventListener("keydown", handleDrawingKeys, true);
+  }, [chartMode, deleteSelectedDrawing, open, undoDrawingChange]);
   const closeModal = useCallback(() => {
     // Reveal the underlying page immediately. Chart teardown can take a frame,
     // and a stale fullscreen backdrop must never leave the app looking blank.
@@ -161,8 +266,267 @@ const ChartFullscreenModal = ({
   useEffect(() => {
     if (open) {
       setChartMode(defaultChartMode);
+      setDrawingTool("select");
     }
   }, [defaultChartMode, open, title]);
+
+  useEffect(() => {
+    if (!open || chartMode !== "candlestick") return;
+    const chart = chartRef.current?.chart;
+    if (!chart?.container || !chart.xAxis[0] || !chart.yAxis[0]) return;
+
+    const chartContainer = chart.container;
+    const renderer = chart.renderer;
+    let group: Highcharts.SVGElement | null = null;
+    const renderDrawings = () => {
+      if (!chart.container?.isConnected || !chart.renderer.box || !chart.xAxis[0] || !chart.yAxis[0]) return;
+      group?.destroy();
+      group = renderer.g("user-chart-drawings").attr({ zIndex: 7 }).add();
+      const allDrawings = drawingPreviewRef.current
+        ? [...drawingsRef.current.filter((drawing) => drawing.id !== drawingPreviewRef.current?.id), drawingPreviewRef.current]
+        : drawingsRef.current;
+      allDrawings.forEach((drawing) => {
+        if (!isChartDrawing(drawing)) return;
+        const selected = drawing.id === selectedDrawingIdRef.current;
+        const x1 = chart.xAxis[0].toPixels(drawing.start.x);
+        const y1 = chart.yAxis[0].toPixels(drawing.start.y);
+        const x2 = chart.xAxis[0].toPixels(drawing.end.x);
+        const y2 = drawing.tool === "horizontal" ? y1 : chart.yAxis[0].toPixels(drawing.end.y);
+        const attrs = { stroke: selected ? "#60a5fa" : drawing.color, "stroke-width": selected ? drawing.width + 1 : drawing.width, "stroke-linecap": "round" as const, "stroke-linejoin": "round" as const };
+        if (drawing.tool === "rectangle") {
+          const left = Math.min(x1, x2);
+          const right = Math.max(x1, x2);
+          const top = Math.min(y1, y2);
+          const bottom = Math.max(y1, y2);
+          renderer.rect(left, top, Math.max(1, right - left), Math.max(1, bottom - top), 2)
+            .attr({ ...attrs, fill: Highcharts.color(drawing.color).setOpacity(0.12).get(), "fill-opacity": 1 })
+            .add(group!);
+          renderer.path([["M", left, (top + bottom) / 2], ["L", right, (top + bottom) / 2]])
+            .attr({ stroke: selected ? "#93c5fd" : drawing.color, "stroke-width": Math.max(1, drawing.width - 0.5), "stroke-dasharray": "2,4", "stroke-linecap": "round", opacity: 0.9 })
+            .add(group!);
+        } else if (drawing.tool === "fibonacci") {
+          const left = Math.min(x1, x2);
+          const right = Math.max(x1, x2);
+          const top = Math.min(y1, y2);
+          const bottom = Math.max(y1, y2);
+          const midpoint = chart.yAxis[0].toPixels((drawing.start.y + drawing.end.y) / 2);
+          const fibGreen = "#22c55e";
+          const boundary = "#a1a1aa";
+          renderer.rect(left, top, Math.max(1, right - left), Math.max(1, midpoint - top), 0)
+            .attr({ fill: "rgba(34, 197, 94, .11)", stroke: "none", zIndex: 6 })
+            .add(group!);
+          renderer.rect(left, midpoint, Math.max(1, right - left), Math.max(1, bottom - midpoint), 0)
+            .attr({ fill: "rgba(148, 163, 184, .08)", stroke: "none", zIndex: 6 })
+            .add(group!);
+          renderer.path([["M", x1, y1], ["L", x2, y2]])
+            .attr({ stroke: selected ? "#93c5fd" : "#a1a1aa", "stroke-width": 1.5, dashstyle: "Dash", opacity: 0.8 })
+            .add(group!);
+          FIB_RETRACEMENT_LEVELS.forEach((level) => {
+            const price = drawing.end.y + (drawing.start.y - drawing.end.y) * level;
+            const y = chart.yAxis[0].toPixels(price);
+            const isMidpoint = level === 0.5;
+            const isBoundary = level === 0 || level === 1;
+            const levelColor = selected ? "#93c5fd" : isMidpoint ? fibGreen : isBoundary ? boundary : "#718096";
+            renderer.path([["M", left, y], ["L", right, y]])
+              .attr({ stroke: levelColor, "stroke-width": isMidpoint ? Math.max(1.5, drawing.width) : isBoundary ? 1.2 : 1, opacity: isMidpoint || isBoundary ? 0.95 : 0.55 })
+              .add(group!);
+            const levelLabel = level === 0 || level === 1 ? String(level) : Highcharts.numberFormat(level, 3);
+            const priceLabel = Highcharts.numberFormat(price, 1);
+            renderer.label(`${levelLabel} (${priceLabel})`, left - 82, y - 9, "rect")
+              .attr({ fill: "rgba(5, 8, 13, .88)", stroke: "none", padding: 2, r: 2, zIndex: 8 })
+              .css({ color: isMidpoint ? fibGreen : levelColor, fontSize: "10px", fontWeight: isMidpoint || isBoundary ? "700" : "500" })
+              .add(group!);
+          });
+        } else {
+          renderer.path([["M", x1, y1], ["L", drawing.tool === "horizontal" ? chart.plotLeft + chart.plotWidth : x2, y2]])
+            .attr(attrs)
+            .add(group!);
+          if (drawing.tool === "measure") {
+            const pointDelta = drawing.end.y - drawing.start.y;
+            const percentDelta = drawing.start.y ? pointDelta / Math.abs(drawing.start.y) * 100 : 0;
+            const measurement = `${pointDelta >= 0 ? "+" : ""}${Highcharts.numberFormat(pointDelta, 2)} pts · ${percentDelta >= 0 ? "+" : ""}${Highcharts.numberFormat(percentDelta, 2)}%`;
+            renderer.label(measurement, (x1 + x2) / 2 + 8, (y1 + y2) / 2 - 24, "rect")
+              .attr({ fill: "rgba(15, 23, 42, .96)", stroke: drawing.color, "stroke-width": 1, padding: 5, r: 4, zIndex: 9 })
+              .css({ color: "#e8edf7", fontSize: "11px", fontWeight: "700" })
+              .add(group!);
+          }
+        }
+        if (selected) {
+          if (drawing.tool === "fibonacci") {
+            [ { x: x1, y: y1 }, { x: x2, y: y2 } ].forEach((handle) => renderer.circle(handle.x, handle.y, 5)
+              .attr({ fill: "#05080d", stroke: "#3b82f6", "stroke-width": 2, zIndex: 10 })
+              .add(group!));
+          }
+          const handles = drawing.tool === "rectangle"
+            ? [
+                { x: x1, y: y1 }, { x: x2, y: y2 },
+                { x: x2, y: y1 }, { x: x1, y: y2 },
+              ]
+            : drawing.tool === "horizontal"
+              ? [{ x: chart.plotLeft + chart.plotWidth / 2, y: y1 }]
+              : [{ x: x1, y: y1 }, { x: x2, y: y2 }];
+          if (drawing.tool !== "fibonacci") handles.forEach((handle) => renderer.rect(handle.x - 5, handle.y - 5, 10, 10, 2)
+            .attr({ fill: "#111827", stroke: "#60a5fa", "stroke-width": 1.5, zIndex: 10 })
+            .add(group!));
+        }
+      });
+    };
+    renderDrawings();
+    Highcharts.addEvent(chart, "redraw", renderDrawings);
+
+    let start: { x: number; y: number } | null = null;
+    let drawingDrag: DrawingDrag | null = null;
+    let previewId = "drawing-preview";
+    const getValue = (event: PointerEvent) => {
+      const point = chart.pointer.normalize(event);
+      if (!chart.isInsidePlot(point.chartX - chart.plotLeft, point.chartY - chart.plotTop)) return null;
+      return { x: chart.xAxis[0].toValue(point.chartX), y: chart.yAxis[0].toValue(point.chartY) };
+    };
+    const stopChartInteraction = (event: PointerEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+    };
+    const getHandleMode = (drawing: ChartDrawing, chartX: number, chartY: number): DrawingHandle["mode"] | null => {
+      const x1 = chart.xAxis[0].toPixels(drawing.start.x), y1 = chart.yAxis[0].toPixels(drawing.start.y);
+      const x2 = chart.xAxis[0].toPixels(drawing.end.x), y2 = chart.yAxis[0].toPixels(drawing.end.y);
+      const candidates: DrawingHandle[] = drawing.tool === "rectangle"
+        ? [
+            { x: x1, y: y1, mode: "start" }, { x: x2, y: y2, mode: "end" },
+            { x: x2, y: y1, mode: "end-x-start-y" }, { x: x1, y: y2, mode: "start-x-end-y" },
+          ]
+        : drawing.tool === "horizontal"
+          ? [{ x: chart.plotLeft + chart.plotWidth / 2, y: y1, mode: "level" }]
+          : [{ x: x1, y: y1, mode: "start" }, { x: x2, y: y2, mode: "end" }];
+      return candidates.find((handle) => Math.hypot(chartX - handle.x, chartY - handle.y) <= 14)?.mode ?? null;
+    };
+    const hitTest = (drawing: ChartDrawing, chartX: number, chartY: number) => {
+      const x1 = chart.xAxis[0].toPixels(drawing.start.x), y1 = chart.yAxis[0].toPixels(drawing.start.y);
+      const x2 = chart.xAxis[0].toPixels(drawing.end.x), y2 = chart.yAxis[0].toPixels(drawing.end.y);
+      if (drawing.tool === "rectangle") {
+        return chartX >= Math.min(x1, x2) - 5 && chartX <= Math.max(x1, x2) + 5
+          && chartY >= Math.min(y1, y2) - 5 && chartY <= Math.max(y1, y2) + 5;
+      }
+      if (drawing.tool === "fibonacci") {
+        if (chartX < Math.min(x1, x2) - 5 || chartX > Math.max(x1, x2) + 5) return false;
+        return FIB_RETRACEMENT_LEVELS.some((level) => {
+          const price = drawing.end.y + (drawing.start.y - drawing.end.y) * level;
+          return Math.abs(chartY - chart.yAxis[0].toPixels(price)) <= 9;
+        });
+      }
+      if (drawing.tool === "horizontal") return Math.abs(chartY - y1) <= 8;
+      const dx = x2 - x1, dy = y2 - y1;
+      const lengthSquared = dx * dx + dy * dy;
+      const ratio = lengthSquared ? Math.max(0, Math.min(1, ((chartX - x1) * dx + (chartY - y1) * dy) / lengthSquared)) : 0;
+      return Math.hypot(chartX - (x1 + ratio * dx), chartY - (y1 + ratio * dy)) <= 8;
+    };
+    const editDrawingAt = (drag: DrawingDrag, value: { x: number; y: number }): ChartDrawing => {
+      const { original, pointerStart, mode } = drag;
+      const dx = value.x - pointerStart.x, dy = value.y - pointerStart.y;
+      if (mode === "move") return { ...original, start: { x: original.start.x + dx, y: original.start.y + dy }, end: { x: original.end.x + dx, y: original.end.y + dy } };
+      if (mode === "start") return { ...original, start: value };
+      if (mode === "end") return { ...original, end: value };
+      if (mode === "level") return { ...original, start: { ...original.start, y: value.y }, end: { ...original.end, y: value.y } };
+      if (mode === "end-x-start-y") return { ...original, end: { ...original.end, x: value.x }, start: { ...original.start, y: value.y } };
+      return { ...original, start: { ...original.start, x: value.x }, end: { ...original.end, y: value.y } };
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      const value = getValue(event);
+      if (!value) return;
+      if (drawingToolRef.current === "select") {
+        const pointer = chart.pointer.normalize(event);
+        const existing = drawingsRef.current;
+        const selected = existing.find((drawing) => drawing.id === selectedDrawingIdRef.current);
+        const selectedHandle = selected ? getHandleMode(selected, pointer.chartX, pointer.chartY) : null;
+        const hit = selectedHandle && selected
+          ? selected
+          : [...existing].reverse().find((drawing) => hitTest(drawing, pointer.chartX, pointer.chartY));
+        if (!hit) { selectedDrawingIdRef.current = null; setSelectedDrawingId(null); return; }
+        stopChartInteraction(event);
+        selectedDrawingIdRef.current = hit.id;
+        setSelectedDrawingId(hit.id);
+        drawingDrag = {
+          id: hit.id,
+          original: hit,
+          pointerStart: value,
+          mode: selectedHandle && selected ? selectedHandle : "move",
+        };
+        return;
+      }
+      stopChartInteraction(event);
+      start = value;
+      setDrawingPreview({ id: previewId, tool: drawingToolRef.current, start: value, end: value, color: drawingColorRef.current, width: drawingWidthRef.current });
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      if (drawingDrag) {
+        const value = getValue(event);
+        if (!value) return;
+        stopChartInteraction(event);
+        setDrawingPreview(editDrawingAt(drawingDrag, value));
+        return;
+      }
+      if (!start || drawingToolRef.current === "select") return;
+      const value = getValue(event);
+      if (!value) return;
+      stopChartInteraction(event);
+      setDrawingPreview({ id: previewId, tool: drawingToolRef.current, start, end: value, color: drawingColorRef.current, width: drawingWidthRef.current });
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      if (drawingDrag) {
+        stopChartInteraction(event);
+        const finalValue = getValue(event);
+        const completedEdit = finalValue ? editDrawingAt(drawingDrag, finalValue) : drawingPreviewRef.current;
+        if (completedEdit && completedEdit.id === drawingDrag.id && isChartDrawing(completedEdit)) {
+          commitDrawings(drawingsRef.current.map((drawing) => drawing.id === drawingDrag!.id ? completedEdit : drawing));
+        }
+        drawingDrag = null;
+        setDrawingPreview(null);
+        return;
+      }
+      if (!start || drawingToolRef.current === "select") return;
+      const drawStart = start;
+      const tool = drawingToolRef.current as ChartDrawing["tool"];
+      const color = drawingColorRef.current;
+      const width = drawingWidthRef.current;
+      const value = getValue(event) ?? start;
+      stopChartInteraction(event);
+      const dx = Math.abs(chart.xAxis[0].toPixels(value.x) - chart.xAxis[0].toPixels(drawStart.x));
+      const dy = Math.abs(chart.yAxis[0].toPixels(value.y) - chart.yAxis[0].toPixels(drawStart.y));
+      if (dx > 3 || dy > 3 || tool === "horizontal") {
+        const completedDrawing: ChartDrawing = { id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, tool, start: drawStart, end: value, color, width };
+        commitDrawings([...drawingsRef.current, completedDrawing]);
+        selectedDrawingIdRef.current = completedDrawing.id;
+        setSelectedDrawingId(completedDrawing.id);
+        drawingToolRef.current = "select";
+        setDrawingTool("select");
+      }
+      start = null;
+      previewId = "drawing-preview";
+      setDrawingPreview(null);
+    };
+    const onPointerCancel = () => {
+      start = null;
+      drawingDrag = null;
+      setDrawingPreview(null);
+    };
+    chartContainer.addEventListener("pointerdown", onPointerDown, { capture: true });
+    document.addEventListener("pointermove", onPointerMove, { capture: true });
+    document.addEventListener("pointerup", onPointerUp, { capture: true });
+    document.addEventListener("pointercancel", onPointerCancel, { capture: true });
+    return () => {
+      chartContainer.removeEventListener("pointerdown", onPointerDown, { capture: true });
+      document.removeEventListener("pointermove", onPointerMove, { capture: true });
+      document.removeEventListener("pointerup", onPointerUp, { capture: true });
+      document.removeEventListener("pointercancel", onPointerCancel, { capture: true });
+      Highcharts.removeEvent(chart, "redraw", renderDrawings);
+      group?.destroy();
+    };
+  }, [chartMode, commitDrawings, open]);
+
+  useEffect(() => {
+    if (chartMode === "candlestick") chartRef.current?.chart?.redraw(false);
+  }, [chartMode, safeDrawings, safeDrawingPreview, selectedDrawingId]);
 
   const fullscreenHighchartsOptions = useMemo(() => {
     const selectedOptions =
@@ -679,13 +1043,13 @@ const ChartFullscreenModal = ({
       // received the listener so cleanup remains safe after chart destruction.
       const chartContainer = chart.container;
 
-      const latestPoint = [...candleSeries.points].reverse().find((point) => getCandleReadout(point));
-      setCandleReadout(getCandleReadout(latestPoint));
+      const latestPoint = [...candleSeries.points].reverse().find((point) => getCandleReadout(point, candleIntervalSelection));
+      setCandleReadout(getCandleReadout(latestPoint, candleIntervalSelection));
 
       const updateReadout = (event: MouseEvent) => {
         const pointer = chart.pointer.normalize(event);
         if (!chart.isInsidePlot(pointer.chartX - chart.plotLeft, pointer.chartY - chart.plotTop)) return;
-        const nextReadout = getCandleReadout(candleSeries.searchPoint(pointer, true));
+        const nextReadout = getCandleReadout(candleSeries.searchPoint(pointer, true), candleIntervalSelection);
         if (nextReadout) setCandleReadout((current) => current?.x === nextReadout.x ? current : nextReadout);
       };
 
@@ -752,7 +1116,7 @@ const ChartFullscreenModal = ({
         && event.clientY >= bounds.top + 10 && event.clientY <= bounds.bottom - 88;
     };
     const getYAxisExtent = () => {
-      const instance = echartsInstanceRef.current;
+      const instance = getLiveEchartsInstance();
       if (!instance) return null;
       try {
         const model = (instance as unknown as { getModel: () => {
@@ -786,7 +1150,7 @@ const ChartFullscreenModal = ({
       return [Math.min(0, dataMin - padding), dataMax + padding];
     };
     const getAxisZoomRanges = () => {
-      const instance = echartsInstanceRef.current;
+      const instance = getLiveEchartsInstance();
       if (!instance) return {};
       const option = instance.getOption() as unknown as {
         dataZoom?: Array<{ xAxisIndex?: number | number[]; yAxisIndex?: number | number[]; start?: number; end?: number }>;
@@ -801,7 +1165,7 @@ const ChartFullscreenModal = ({
       return { xZoom: rangeAt(xIndex) };
     };
     const applyDragMove = (clientX: number, clientY: number) => {
-      const instance = echartsInstanceRef.current;
+      const instance = getLiveEchartsInstance();
       if (!instance || !drag) return;
       if (drag.mode === "pan") {
         const shiftRange = (range: ZoomRange, distance: number, size: number, direction: number) => {
@@ -828,7 +1192,7 @@ const ChartFullscreenModal = ({
         const point: [number, number] = [event.clientX - bounds.left, event.clientY - bounds.top];
         host.style.cursor = isOverValueAxis(event)
           ? "ns-resize"
-          : echartsInstanceRef.current?.containPixel({ gridIndex: 0 }, point) ? "grab" : "";
+          : getLiveEchartsInstance()?.containPixel({ gridIndex: 0 }, point) ? "grab" : "";
         return;
       }
       pendingPointer = { clientX: event.clientX, clientY: event.clientY };
@@ -844,7 +1208,7 @@ const ChartFullscreenModal = ({
     };
     const onPointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return;
-      const instance = echartsInstanceRef.current;
+      const instance = getLiveEchartsInstance();
       if (!instance) return;
       const bounds = host.getBoundingClientRect();
       if (isOverValueAxis(event)) {
@@ -895,7 +1259,7 @@ const ChartFullscreenModal = ({
     };
     const onDoubleClick = (event: MouseEvent) => {
       if (!isOverValueAxis(event as unknown as PointerEvent)) return;
-      echartsInstanceRef.current?.setOption({ yAxis: { min: "dataMin", max: "dataMax" } });
+      getLiveEchartsInstance()?.setOption({ yAxis: { min: "dataMin", max: "dataMax" } });
     };
 
     host.addEventListener("pointerdown", onPointerDown, true);
@@ -919,11 +1283,11 @@ const ChartFullscreenModal = ({
       document.removeEventListener("pointercancel", endDrag);
       echartsInstanceRef.current = null;
     };
-  }, [echartsOption, kind, open]);
+  }, [echartsOption, getLiveEchartsInstance, kind, open]);
 
   const resetChartView = useCallback(() => {
     if (kind === "echarts") {
-      const instance = echartsInstanceRef.current;
+      const instance = getLiveEchartsInstance();
       if (!instance || !fullscreenEchartsOption) return;
       instance.clear();
       instance.setOption(fullscreenEchartsOption);
@@ -943,7 +1307,7 @@ const ChartFullscreenModal = ({
     }
     chart.yAxis.forEach((axis) => axis.setExtremes(undefined, undefined, false, false));
     chart.redraw(false);
-  }, [candleIntervalSelection, chartMode, fullscreenEchartsOption, highchartsOptions, kind, rangeSelection, stockOptions]);
+  }, [candleIntervalSelection, chartMode, fullscreenEchartsOption, getLiveEchartsInstance, highchartsOptions, kind, rangeSelection, stockOptions]);
 
   if (!open) {
     return null;
@@ -1008,7 +1372,14 @@ const ChartFullscreenModal = ({
           </div>
         </div>
 
-        <div className="chart-fullscreen-body">
+        <div className={`chart-fullscreen-body${chartMode === "candlestick" && title.toLowerCase().includes("wealth") ? " has-drawing-sidebar" : ""}`}>
+          {timeInOutcome && title === "Profit & Loss Trend" && (
+            <div className="chart-time-in-outcome" aria-label="Share of active trading days by gross result">
+              <article className="profit"><span>Time in profit</span><strong>{timeInOutcome.totalDays ? `${timeInOutcome.profitPercent.toFixed(1)}%` : "—"}</strong><small>{timeInOutcome.profitDays} profitable {timeInOutcome.profitDays === 1 ? "day" : "days"}</small></article>
+              <article className="loss"><span>Time in loss</span><strong>{timeInOutcome.totalDays ? `${timeInOutcome.lossPercent.toFixed(1)}%` : "—"}</strong><small>{timeInOutcome.lossDays} losing {timeInOutcome.lossDays === 1 ? "day" : "days"}</small></article>
+              <p>Share of {timeInOutcome.totalDays} active trading days, based on each day’s gross net P&amp;L before costs.</p>
+            </div>
+          )}
           {(fullscreenHighchartsOptions || fullscreenEchartsOption) && (
             <div className="chart-toolbar-controls">
               <label className="chart-range-dropdown">
@@ -1033,11 +1404,29 @@ const ChartFullscreenModal = ({
               </button>
             </div>
           )}
+          {chartMode === "candlestick" && title.toLowerCase().includes("wealth") && <div className="chart-drawing-tools" role="toolbar" aria-orientation="vertical" aria-label="Candlestick drawing tools">
+            <button type="button" className={drawingTool === "select" ? "active" : ""} aria-pressed={drawingTool === "select"} title="Select and move drawings" onClick={() => setDrawingTool("select")}><MousePointer2 size={17} /><span>Select</span></button>
+            <button type="button" className={drawingTool === "trendline" ? "active" : ""} aria-pressed={drawingTool === "trendline"} title="Draw trend line" onClick={() => setDrawingTool("trendline")}><TrendingUp size={17} /><span>Trend line</span></button>
+            <button type="button" className={drawingTool === "rectangle" ? "active" : ""} aria-pressed={drawingTool === "rectangle"} title="Draw rectangle" onClick={() => setDrawingTool("rectangle")}><Square size={17} /><span>Rectangle</span></button>
+            <button type="button" className={drawingTool === "fibonacci" ? "active" : ""} aria-pressed={drawingTool === "fibonacci"} title="Draw Fibonacci retracement levels" onClick={() => setDrawingTool("fibonacci")}><Percent size={17} /><span>Fib retracement</span></button>
+            <button type="button" className={drawingTool === "horizontal" ? "active" : ""} aria-pressed={drawingTool === "horizontal"} title="Draw horizontal line" onClick={() => setDrawingTool("horizontal")}><span className="chart-tool-horizontal-icon" /><span>Horizontal line</span></button>
+            <button type="button" className={drawingTool === "measure" ? "active" : ""} aria-pressed={drawingTool === "measure"} title="Measure price points and percentage" onClick={() => setDrawingTool("measure")}><Ruler size={17} /><span>Measure</span></button>
+            <label title="Drawing color"><span className="sr-only">Drawing color</span><input type="color" value={drawingColor} onChange={(event) => setDrawingColor(event.target.value)} /></label>
+            <label title="Line width"><span className="sr-only">Line width</span><select value={drawingWidth} onChange={(event) => setDrawingWidth(Number(event.target.value))} aria-label="Drawing line width"><option value={1}>1 px</option><option value={2}>2 px</option><option value={3}>3 px</option><option value={4}>4 px</option></select></label>
+            <span className="chart-drawing-tools-separator" aria-hidden="true" />
+            <button type="button" title="Undo last drawing or edit (Ctrl+Z)" aria-label="Undo last drawing or edit" onClick={undoDrawingChange} disabled={!undoStackRef.current.length}><Undo2 size={17} /><span>Undo</span></button>
+            <button type="button" title="Delete selected drawing (Delete)" aria-label="Delete selected drawing" onClick={deleteSelectedDrawing} disabled={!selectedDrawingId}><Trash2 size={17} /><span>Delete selected</span></button>
+            <button type="button" title="Clear all drawings" aria-label="Clear all drawings" onClick={() => { commitDrawings([]); setSelectedDrawingId(null); }} disabled={!safeDrawings.length}><X size={17} /><span>Clear drawings</span></button>
+          </div>}
           {chartMode === "candlestick" && candleReadout && (
             <div className="chart-candle-readout" aria-label="Selected candle values">
               <time dateTime={new Date(candleReadout.x).toISOString()}>
                 {new Date(candleReadout.x).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase()}
               </time>
+              <div className="chart-candle-readout-period" aria-label="Candle start and end time">
+                <span>Start <strong>{formatCandleTime(candleReadout.start)}</strong></span>
+                <span>End <strong>{formatCandleTime(candleReadout.end)}</strong></span>
+              </div>
               <div className="chart-candle-readout-values">
                 <span>Open <strong>{formatCandleValue(candleReadout.open)}</strong></span>
                 <span>Low <strong className="low">{formatCandleValue(candleReadout.low)}</strong></span>
@@ -1086,7 +1475,7 @@ const ChartFullscreenModal = ({
             <div ref={echartsHostRef} className="fullscreen-echarts-host" style={{ width: "100%", height: "100%" }}>
               <EChartsChart
                 option={fullscreenEchartsOption}
-                onChartReady={(instance) => { echartsInstanceRef.current = instance; }}
+                onChartReady={(instance) => { if (!instance.isDisposed()) echartsInstanceRef.current = instance; }}
                 style={{ width: "100%", height: "100%" }}
                 notMerge
                 lazyUpdate

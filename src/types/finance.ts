@@ -7,6 +7,9 @@ export interface Investment {
   name: string;
   /** Exchange/provider symbol used to retrieve historical market prices. */
   marketSymbol?: string;
+  /** Latest per-unit market quote returned by the configured quote proxy. */
+  marketPrice?: number;
+  marketPriceUpdatedAt?: string;
   type: InvestmentType;
   amount: number;          // Amount invested
   currentValue: number;    // Current market value
@@ -127,6 +130,8 @@ export interface UserAccount {
   startingBalancePasswordSalt?: string;
   currency: string;
   defaultCostAmount: number;
+  /** Optional daily net-loss warning threshold. Zero or undefined disables it. */
+  dailyLossLimit?: number;
   defaultCostSchedules: DefaultCostSchedule[];
   expenseIncludedByDefault: boolean;
   createdAt: string;

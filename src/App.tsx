@@ -458,6 +458,7 @@ const App = () => {
         {activePage === "dashboard" ? (
           <Dashboard
             user={user}
+            onOpenNotifications={openNotifications}
             onAdd={() =>
               setModalOpen(true)
             }

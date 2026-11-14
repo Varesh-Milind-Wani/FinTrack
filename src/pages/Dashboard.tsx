@@ -2,6 +2,7 @@ import { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import Highcharts from "highcharts";
 import { lazy, Suspense } from "react";
 import HighchartsStock from "highcharts/highstock";
+import "highcharts/modules/accessibility";
 import HighchartsReact from "highcharts-react-official";
 import type { HighchartsReactRefObject } from "highcharts-react-official";
 import ReactECharts from "echarts-for-react";
@@ -9,10 +10,18 @@ import type { EChartsInstance } from "echarts-for-react";
 import {
   BarChart3,
   CalendarDays,
+  ChevronLeft,
+  ChevronRight,
   Download,
+  Search,
+  ArrowDownUp,
+  BellRing,
+  ArrowRight,
+  ShieldAlert,
   TrendingDown,
   TrendingUp,
   Wallet,
+  X,
 } from "lucide-react";
 
 import StatCard from "../components/StatCard";
@@ -24,6 +33,7 @@ import { formatCurrency } from "../utils/money";
 import { calculateBalanceStats, getAuthoritativeBalance } from "../utils/balance";
 import { usePersistentState } from "../hooks/usePersistentState";
 import { groupCandles } from "../utils/candleGrouping";
+import { getWeekdayOutlook } from "../utils/weekdayNotifications";
 
 const HighchartsStockChart =
   (HighchartsReact as unknown as {
@@ -186,14 +196,98 @@ const createDailySeries = (
 interface Props {
   user: UserAccount;
   onAdd: () => void;
+  onOpenNotifications: () => void;
 }
 
-const Dashboard = ({ user, onAdd }: Props) => {
+const Dashboard = ({ user, onAdd, onOpenNotifications }: Props) => {
   const dashboardRef = useRef<HTMLDivElement>(null);
   const [currentHour, setCurrentHour] = useState(() => new Date().getHours());
+  const [currentLocalDate, setCurrentLocalDate] = useState(() => formatDateKey(new Date()));
   const [dashboardPeriod, setDashboardPeriod] = usePersistentState<(typeof dashboardPerformancePeriods)[number]["value"]>("dashboard.performancePeriod", "all");
+  const [dashboardPerformanceIncludesCosts, setDashboardPerformanceIncludesCosts] = usePersistentState("dashboard.performanceIncludesCosts", true);
   const [portfolioTypeFilter, setPortfolioTypeFilter] = usePersistentState<InvestmentType | "all">("dashboard.portfolioScenarioType", "all");
   const [todayPnlIncludesCosts, setTodayPnlIncludesCosts] = useState(true);
+  const [dailyPnlOpen, setDailyPnlOpen] = useState(false);
+  const [dailyPnlPage, setDailyPnlPage] = useState(0);
+  const [dailyPnlSearch, setDailyPnlSearch] = useState("");
+  const [dailyPnlFilter, setDailyPnlFilter] = useState<"all" | "profit" | "loss">("all");
+  const [dailyPnlSort, setDailyPnlSort] = useState<"newest" | "oldest">("newest");
+  useEffect(() => {
+    const refreshDashboardDate = () => {
+      setCurrentHour(new Date().getHours());
+      setCurrentLocalDate(formatDateKey(new Date()));
+    };
+    const timer = window.setInterval(refreshDashboardDate, 60_000);
+    document.addEventListener("visibilitychange", refreshDashboardDate);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshDashboardDate);
+    };
+  }, []);
+  const weekdayOutlook = useMemo(() => {
+    const now = new Date();
+    const isTradingWeekday = now.getDay() >= 1 && now.getDay() <= 5;
+    // Keep today's outlook visible through 6:59 PM local time. Starting at
+    // 7:00 PM, getWeekdayOutlook advances to the next trading weekday.
+    if (isTradingWeekday && currentHour < 19) now.setDate(now.getDate() - 1);
+    return getWeekdayOutlook(user.transactions, now);
+  }, [user.transactions, currentLocalDate, currentHour]);
+  const weekdayOutlookIsToday = formatDateKey(weekdayOutlook.date) === currentLocalDate;
+  const dailyPnlHistory = useMemo(() => {
+    const days = new Map<string, { date: Date; net: number; gross: number; profit: number; loss: number; trades: UserAccount["transactions"] }>();
+    user.transactions.forEach((transaction) => {
+      if (transaction.type !== "profit" && transaction.type !== "loss") return;
+      const date = parseLocalDate(transaction.date);
+      if (!date) return;
+      const key = formatDateKey(date);
+      const day = days.get(key) ?? { date, net: 0, gross: 0, profit: 0, loss: 0, trades: [] };
+      const signedNet = transaction.type === "profit" ? transaction.amount : -transaction.amount;
+      day.net += signedNet;
+      day.gross += signedNet + (transaction.costAmount ?? 0);
+      if (transaction.type === "profit") day.profit += transaction.amount;
+      else day.loss += transaction.amount;
+      day.trades.push(transaction);
+      days.set(key, day);
+    });
+    return [...days.entries()].sort(([a], [b]) => b.localeCompare(a)).map(([key, day]) => ({ key, ...day }));
+  }, [user.transactions]);
+  const configuredDailyLossLimit = Math.max(0, Number(user.dailyLossLimit) || 0);
+  const todayNetPnl = dailyPnlHistory.find((day) => day.key === currentLocalDate)?.net ?? 0;
+  const todayLossUsed = Math.max(0, -todayNetPnl);
+  const dailyLossLimitProgress = configuredDailyLossLimit > 0
+    ? Math.min(100, (todayLossUsed / configuredDailyLossLimit) * 100)
+    : 0;
+  const dailyLossLimitState = todayLossUsed >= configuredDailyLossLimit
+    ? "reached"
+    : dailyLossLimitProgress >= 75 ? "approaching" : "within-limit";
+  const filteredDailyPnlHistory = useMemo(() => {
+    const query = dailyPnlSearch.trim().toLocaleLowerCase();
+    return dailyPnlHistory
+      .filter((day) => {
+        const net = todayPnlIncludesCosts ? day.net : day.gross;
+        if (dailyPnlFilter === "profit" && net <= 0) return false;
+        if (dailyPnlFilter === "loss" && net >= 0) return false;
+        if (!query) return true;
+        const searchable = [day.key, day.date.toLocaleDateString(), ...day.trades.flatMap((trade) => [trade.note, trade.category])]
+          .join(" ").toLocaleLowerCase();
+        return searchable.includes(query);
+      })
+      .sort((a, b) => dailyPnlSort === "newest" ? b.key.localeCompare(a.key) : a.key.localeCompare(b.key));
+  }, [dailyPnlFilter, dailyPnlHistory, dailyPnlSearch, dailyPnlSort, todayPnlIncludesCosts]);
+  const dailyPnlSummary = useMemo(() => dailyPnlHistory.reduce((summary, day) => {
+    const net = todayPnlIncludesCosts ? day.net : day.gross;
+    summary.net += net;
+    if (net > 0) summary.profitDays += 1;
+    else if (net < 0) summary.lossDays += 1;
+    summary.trades += day.trades.length;
+    return summary;
+  }, { net: 0, profitDays: 0, lossDays: 0, trades: 0 }), [dailyPnlHistory, todayPnlIncludesCosts]);
+  const dailyPnlPageSize = 7;
+  const dailyPnlPageCount = Math.max(1, Math.ceil(filteredDailyPnlHistory.length / dailyPnlPageSize));
+  const visibleDailyPnl = filteredDailyPnlHistory.slice(dailyPnlPage * dailyPnlPageSize, (dailyPnlPage + 1) * dailyPnlPageSize);
+  useEffect(() => {
+    setDailyPnlPage((page) => Math.min(page, dailyPnlPageCount - 1));
+  }, [dailyPnlPageCount]);
   const wealthChartRef = useRef<HighchartsReactRefObject>(null);
   const profitLossChartRef = useRef<EChartsInstance | null>(null);
   const [wealthRange, setWealthRange] = usePersistentState("dashboard.wealthChartRange", 9);
@@ -206,10 +300,42 @@ const Dashboard = ({ user, onAdd }: Props) => {
         stockOptions?: Highcharts.Options;
         defaultChartMode?: "classic" | "candlestick";
         echartsOption?: Record<string, unknown>;
+        timeInOutcome?: { profitPercent: number; lossPercent: number; profitDays: number; lossDays: number; totalDays: number };
       }
     | null
   >(null);
+  const [averageTradeChart, setAverageTradeChart] = useState<{
+    title: string;
+    subtitle: string;
+    average: number;
+    tradeCount: number;
+    options: Highcharts.Options;
+  } | null>(null);
+  const [peakTradeChart, setPeakTradeChart] = useState<{
+    title: string;
+    subtitle: string;
+    peak: number;
+    current: number;
+    changeLabel: string;
+    changeValue: number;
+    tradeCount: number;
+    options: Highcharts.Options;
+  } | null>(null);
   const closeFullscreenChart = useCallback(() => setFullscreenChart(null), []);
+
+  useEffect(() => {
+    if (!peakTradeChart) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPeakTradeChart(null);
+    };
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [peakTradeChart]);
 
 
   useEffect(() => {
@@ -377,10 +503,15 @@ const Dashboard = ({ user, onAdd }: Props) => {
     const startTime = start?.getTime() ?? Number.NEGATIVE_INFINITY;
     const endTime = Date.now();
     let openingBalance = user.startingBalance;
+    let grossOpeningBalance = user.startingBalance;
     let totalProfit = 0;
     let totalLoss = 0;
+    let grossProfit = 0;
+    let grossLoss = 0;
     let profitCount = 0;
     let lossCount = 0;
+    let grossProfitCount = 0;
+    let grossLossCount = 0;
     const dailyNet = new Map<string, { timestamp: number; signedAmount: number }>();
     const realizedRValues: number[] = [];
     const confidenceBands = [
@@ -396,8 +527,10 @@ const Dashboard = ({ user, onAdd }: Props) => {
       const timestamp = date?.getTime();
       if (timestamp === undefined || !Number.isFinite(timestamp) || timestamp > endTime) return;
       const signedAmount = transaction.type === "profit" ? transaction.amount : -transaction.amount;
+      const grossSignedAmount = signedAmount + (transaction.costAmount ?? 0);
       if (timestamp < startTime) {
         openingBalance += signedAmount;
+        grossOpeningBalance += grossSignedAmount;
         return;
       }
       if (Number.isFinite(transaction.confidenceLevel) && transaction.confidenceLevel! >= 0 && transaction.confidenceLevel! <= 100) {
@@ -418,6 +551,13 @@ const Dashboard = ({ user, onAdd }: Props) => {
       } else {
         totalLoss += transaction.amount;
         lossCount += 1;
+      }
+      if (grossSignedAmount >= 0) {
+        grossProfit += grossSignedAmount;
+        grossProfitCount += 1;
+      } else {
+        grossLoss += Math.abs(grossSignedAmount);
+        grossLossCount += 1;
       }
       const key = formatDateKey(date);
       const day = dailyNet.get(key) ?? { timestamp, signedAmount: 0 };
@@ -468,8 +608,13 @@ const Dashboard = ({ user, onAdd }: Props) => {
     return {
       totalProfit,
       totalLoss,
+      grossProfit,
+      grossLoss,
+      grossNet: grossProfit - grossLoss,
       profitCount,
       lossCount,
+      grossProfitCount,
+      grossLossCount,
       totalTrades,
       winRate: totalTrades > 0 ? (profitCount / totalTrades) * 100 : 0,
       avgProfitPerTrade: profitCount > 0 ? totalProfit / profitCount : 0,
@@ -478,6 +623,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
       profitFactor: totalTrades === 0 ? null : totalLoss > 0 ? totalProfit / totalLoss : (totalProfit > 0 ? null : 0),
       net,
       returnPercentage: openingBalance > 0 ? (net / openingBalance) * 100 : null,
+      grossReturnPercentage: grossOpeningBalance > 0 ? ((grossProfit - grossLoss) / grossOpeningBalance) * 100 : null,
       peakProfit,
       peakLoss,
       maxDrawdown,
@@ -511,6 +657,117 @@ const Dashboard = ({ user, onAdd }: Props) => {
       },
     };
   }, [dashboardPeriod, user.startingBalance, user.transactions]);
+
+  const openAverageTradeChart = (tradeType: "profit" | "loss") => {
+    const months = dashboardPerformancePeriods.find((period) => period.value === dashboardPeriod)?.value;
+    const monthCount = months === "1m" ? 1 : months === "3m" ? 3 : months === "6m" ? 6 : months === "1y" ? 12 : null;
+    const start = monthCount === null ? null : subtractCalendarMonths(new Date(), monthCount);
+    if (start) start.setHours(0, 0, 0, 0);
+    const startTime = start?.getTime() ?? Number.NEGATIVE_INFINITY;
+    const endTime = Date.now();
+    const periodTrades = user.transactions
+      .filter((transaction) => transaction.type === "profit" || transaction.type === "loss")
+      .map((transaction) => ({ transaction, date: parseLocalDate(transaction.date) }))
+      .filter((entry): entry is { transaction: typeof user.transactions[number]; date: Date } => entry.date instanceof Date
+        && Number.isFinite(entry.date.getTime()) && entry.date.getTime() >= startTime && entry.date.getTime() <= endTime)
+      .sort((left, right) => left.date.getTime() - right.date.getTime());
+    const trades = periodTrades.filter(({ transaction }) => transaction.type === tradeType);
+    let total = 0;
+    const tradeSeries: Array<[number, number]> = [];
+    trades.forEach(({ transaction, date }) => {
+      const amount = transaction.amount;
+      total += amount;
+      tradeSeries.push([date.getTime(), amount]);
+    });
+    const runningAverageSeries = (type: "profit" | "loss"): Array<[number, number]> => {
+      let runningTotal = 0;
+      let count = 0;
+      return periodTrades.flatMap(({ transaction, date }) => {
+        if (transaction.type !== type) return [];
+        runningTotal += transaction.amount;
+        count += 1;
+        return [[date.getTime(), runningTotal / count] as [number, number]];
+      });
+    };
+    const averageProfitSeries = runningAverageSeries("profit");
+    const averageLossSeries = runningAverageSeries("loss");
+    const label = tradeType === "profit" ? "Profit" : "Loss";
+    setAverageTradeChart({
+      title: `Average ${label} per Trade`,
+      subtitle: `${trades.length} ${tradeType === "profit" ? "profitable" : "losing"} trades · ${dashboardPeriodLabel.toLowerCase()} · selected trade amounts vs. average profit and loss`,
+      average: trades.length ? total / trades.length : 0,
+      tradeCount: trades.length,
+      options: {
+        chart: { type: "line", backgroundColor: "transparent", height: 580, animation: false, zooming: { type: "x", resetButton: { relativeTo: "plotBox", position: { align: "right", verticalAlign: "top", x: -10, y: 10 } } } },
+        title: { text: undefined },
+        xAxis: { type: "datetime", title: { text: "Trade date" } },
+        yAxis: { title: { text: `Amount (${user.currency})` }, min: 0 },
+        tooltip: { shared: true, xDateFormat: "%e %b %Y", valuePrefix: `${user.currency} `, valueDecimals: 2 },
+        legend: { enabled: true },
+        credits: { enabled: false },
+        plotOptions: { series: { animation: false, marker: { enabled: trades.length <= 40, radius: 3 } } },
+        series: [
+          { type: "line", name: `${label} per trade`, data: tradeSeries, color: tradeType === "profit" ? "#10b981" : "#ef5350" },
+          { type: "line", name: "Average profit", data: averageProfitSeries, color: "#5b7cff", lineWidth: 3, marker: { enabled: false } },
+          { type: "line", name: "Average loss", data: averageLossSeries, color: "#f59e0b", lineWidth: 3, marker: { enabled: false } },
+        ],
+      },
+    });
+  };
+
+  const openPeakTradeChart = (peakType: "profit" | "loss") => {
+    const datedTrades = user.transactions
+      .filter((transaction) => (transaction.type === "profit" || transaction.type === "loss")
+        && Number.isFinite(transaction.amount))
+      .map((transaction) => ({ transaction, date: parseLocalDate(transaction.date) }))
+      .filter((entry): entry is { transaction: typeof user.transactions[number]; date: Date } => entry.date instanceof Date
+        && Number.isFinite(entry.date.getTime()) && entry.date.getTime() <= Date.now())
+      .sort((left, right) => left.date.getTime() - right.date.getTime());
+
+    let runningResult = 0;
+    let bestPoint: [number, number] | null = null;
+    let worstPoint: [number, number] | null = null;
+    const cumulativeSeries: Array<[number, number]> = [];
+    datedTrades.forEach(({ transaction, date }) => {
+      runningResult += transaction.type === "profit" ? transaction.amount : -transaction.amount;
+      const point: [number, number] = [date.getTime(), runningResult];
+      cumulativeSeries.push(point);
+      if (!bestPoint || runningResult > bestPoint[1]) bestPoint = point;
+      if (!worstPoint || runningResult < worstPoint[1]) worstPoint = point;
+    });
+
+    const selectedPeak = peakType === "profit" ? bestPoint : worstPoint;
+    const peak = selectedPeak?.[1] ?? 0;
+    const current = cumulativeSeries.at(-1)?.[1] ?? 0;
+    const isProfit = peakType === "profit";
+    const changeValue = isProfit ? Math.max(0, peak - current) : Math.max(0, current - peak);
+    const changeLabel = isProfit ? "Below peak" : "Recovered from low";
+    const markerPoint = selectedPeak ? [selectedPeak] : [];
+
+    setPeakTradeChart({
+      title: `Peak ${isProfit ? "Profit" : "Loss"} History`,
+      subtitle: `All-time cumulative trade result across ${datedTrades.length} recorded ${datedTrades.length === 1 ? "trade" : "trades"}.`,
+      peak,
+      current,
+      changeLabel,
+      changeValue,
+      tradeCount: datedTrades.length,
+      options: {
+        chart: { type: "line", backgroundColor: "transparent", height: 500, animation: false, zooming: { type: "x", resetButton: { relativeTo: "plotBox", position: { align: "right", verticalAlign: "top", x: -10, y: 10 } } } },
+        title: { text: undefined },
+        xAxis: { type: "datetime", title: { text: "Trade date" } },
+        yAxis: { title: { text: `Cumulative result (${user.currency})` }, plotLines: [{ value: 0, color: "#718096", width: 1, dashStyle: "ShortDash" }] },
+        tooltip: { shared: true, xDateFormat: "%e %b %Y", valuePrefix: `${user.currency} `, valueDecimals: 2 },
+        legend: { enabled: true },
+        credits: { enabled: false },
+        plotOptions: { series: { animation: false, marker: { enabled: datedTrades.length <= 80, radius: 3 } } },
+        series: [
+          { type: "line", name: "Cumulative trade result", data: cumulativeSeries, color: "#5b7cff", lineWidth: 2 },
+          { type: "scatter", name: isProfit ? "Peak profit" : "Peak loss", data: markerPoint, color: isProfit ? "#10b981" : "#ef5350", marker: { enabled: true, radius: 7, symbol: "circle" }, zIndex: 5 },
+        ],
+      },
+    });
+  };
 
   const todayStats = useMemo(() => {
     const todayKey = formatDateKey(new Date());
@@ -683,12 +940,13 @@ const Dashboard = ({ user, onAdd }: Props) => {
           };
         }
 
-        // Only count if transaction type matches
-        if (transaction.type === "profit") {
-          dailyTotals[key].profit += transaction.amount;
-        } else if (transaction.type === "loss") {
-          dailyTotals[key].loss += transaction.amount;
-        }
+        // The chart represents gross performance, before saved transaction
+        // costs. `type` can flip when costs turn a small gross win into a net
+        // loss, so restore the original signed result before classifying it.
+        const netSigned = transaction.type === "profit" ? transaction.amount : -transaction.amount;
+        const grossSigned = netSigned + (transaction.costAmount ?? 0);
+        if (grossSigned > 0) dailyTotals[key].profit += grossSigned;
+        else if (grossSigned < 0) dailyTotals[key].loss += Math.abs(grossSigned);
       });
 
     if (!dates.length) {
@@ -1493,10 +1751,11 @@ const Dashboard = ({ user, onAdd }: Props) => {
         const net = profit - loss;
         const netColor = net >= 0 ? "#10b981" : "#ef4444";
         return `<div style="background:rgba(8,9,15,0.98);border:2px solid rgba(59,130,246,0.45);border-radius:12px;padding:14px 18px;min-width:220px;box-shadow:0 20px 50px rgba(0,0,0,0.7),inset 0 1px 3px rgba(255,255,255,0.12)">
-          <div style="color:#5e6b80;font-size:11px;margin-bottom:10px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase">${date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</div>
+          <div style="color:#5e6b80;font-size:11px;margin-bottom:3px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase">${date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</div>
+          <div style="color:#71809a;font-size:10px;margin-bottom:8px;font-weight:600">Profit and loss before costs</div>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding:6px 0"><span style="color:#5e6b80;font-size:12px;font-weight:600">Profit</span><span style="color:#10b981;font-weight:700;font-size:13px">${formatMoney(profit)}</span></div>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding:6px 0"><span style="color:#5e6b80;font-size:12px;font-weight:600">Loss</span><span style="color:#ef4444;font-weight:700;font-size:13px">${formatMoney(loss)}</span></div>
-          <div style="border-top:1.5px solid rgba(59,130,246,0.2);padding-top:8px;display:flex;justify-content:space-between;align-items:center"><span style="color:#5e6b80;font-size:11px;font-weight:600">Net P&L</span><span style="color:${netColor};font-weight:800;font-size:13px">${formatMoney(net)}</span></div>
+          <div style="border-top:1.5px solid rgba(59,130,246,0.2);padding-top:8px;display:flex;justify-content:space-between;align-items:center"><span style="color:#5e6b80;font-size:11px;font-weight:600">Net P&amp;L before costs</span><span style="color:${netColor};font-weight:800;font-size:13px">${formatMoney(net)}</span></div>
         </div>`;
       },
     },
@@ -1634,6 +1893,16 @@ const Dashboard = ({ user, onAdd }: Props) => {
 
         </div>
 
+        <aside className={`dashboard-weekday-reminder ${weekdayOutlook.status}`} aria-label="Weekday trading reminder">
+          <div className="dashboard-weekday-reminder-icon"><BellRing size={17} /></div>
+          <div className="dashboard-weekday-reminder-copy">
+            <span>{weekdayOutlookIsToday ? "TODAY'S OUTLOOK" : "NEXT TRADING DAY"} · {weekdayOutlook.dayName.toUpperCase()}</span>
+            <strong>{weekdayOutlook.status === "caution" ? `A discipline reminder for ${weekdayOutlook.dayName}` : weekdayOutlook.status === "strong" ? `${weekdayOutlook.dayName} has been stronger in your history` : `Your ${weekdayOutlook.dayName} outlook`}</strong>
+            <small>{weekdayOutlook.message}</small>
+          </div>
+          <button type="button" onClick={onOpenNotifications}>Notification center <ArrowRight size={15} /></button>
+        </aside>
+
         <div className="dashboard-actions">
           <label className="dashboard-period-control">
             <span className="sr-only">Dashboard performance period</span>
@@ -1661,6 +1930,20 @@ const Dashboard = ({ user, onAdd }: Props) => {
         </div>
       </div>
 
+      {configuredDailyLossLimit > 0 && (
+        <section className={`dashboard-risk-guard ${dailyLossLimitState}`} aria-label="Daily loss limit status" role="status">
+          <div className="dashboard-risk-guard-icon"><ShieldAlert size={18} /></div>
+          <div className="dashboard-risk-guard-copy">
+            <strong>{dailyLossLimitState === "reached" ? "Daily loss limit reached" : dailyLossLimitState === "approaching" ? "Approaching your daily loss limit" : "Daily loss guard"}</strong>
+            <span>{formatCurrency(todayLossUsed, user.currency)} of {formatCurrency(configuredDailyLossLimit, user.currency)} used · Today’s net P&amp;L {formatCurrency(todayNetPnl, user.currency)}</span>
+            <div className="dashboard-risk-guard-track" aria-label={`${Math.round(dailyLossLimitProgress)}% of daily loss limit used`}>
+              <i style={{ width: `${dailyLossLimitProgress}%` }} />
+            </div>
+          </div>
+          <span className="dashboard-risk-guard-value">{Math.round(dailyLossLimitProgress)}%</span>
+        </section>
+      )}
+
       <div className="stats-grid">
         <StatCard
           title="Current balance"
@@ -1676,9 +1959,9 @@ const Dashboard = ({ user, onAdd }: Props) => {
 
         <StatCard
           title="Total profit"
-          value={periodStats.totalProfit}
+          value={dashboardPerformanceIncludesCosts ? periodStats.totalProfit : periodStats.grossProfit}
           formatValue={(value) => formatCurrency(value, user.currency)}
-          subtitle={`${periodStats.profitCount} profitable trades · ${dashboardPeriodLabel.toLowerCase()}`}
+          subtitle={`${dashboardPerformanceIncludesCosts ? periodStats.profitCount : periodStats.grossProfitCount} profitable trades · ${dashboardPerformanceIncludesCosts ? "after costs" : "before costs"} · ${dashboardPeriodLabel.toLowerCase()}`}
           positive
           icon={<TrendingUp size={19} />}
           colorVariant="green"
@@ -1686,9 +1969,9 @@ const Dashboard = ({ user, onAdd }: Props) => {
 
         <StatCard
           title="Total loss"
-          value={periodStats.totalLoss}
+          value={dashboardPerformanceIncludesCosts ? periodStats.totalLoss : periodStats.grossLoss}
           formatValue={(value) => formatCurrency(value, user.currency)}
-          subtitle={`${periodStats.lossCount} losing trades · ${dashboardPeriodLabel.toLowerCase()}`}
+          subtitle={`${dashboardPerformanceIncludesCosts ? periodStats.lossCount : periodStats.grossLossCount} losing trades · ${dashboardPerformanceIncludesCosts ? "after costs" : "before costs"} · ${dashboardPeriodLabel.toLowerCase()}`}
           positive={false}
           icon={<TrendingDown size={19} />}
           colorVariant="red"
@@ -1696,12 +1979,13 @@ const Dashboard = ({ user, onAdd }: Props) => {
 
         <StatCard
           title="Net performance"
-          value={periodStats.net}
+          value={dashboardPerformanceIncludesCosts ? periodStats.net : periodStats.grossNet}
           formatValue={(value) => formatCurrency(value, user.currency)}
-          subtitle={`${periodStats.returnPercentage === null ? "Return unavailable" : `${periodStats.returnPercentage >= 0 ? "+" : ""}${periodStats.returnPercentage.toFixed(1)}%`} · ${dashboardPeriodLabel}`}
-          positive={periodStats.net >= 0}
+          subtitle={`${(dashboardPerformanceIncludesCosts ? periodStats.returnPercentage : periodStats.grossReturnPercentage) === null ? "Return unavailable" : `${(dashboardPerformanceIncludesCosts ? periodStats.returnPercentage : periodStats.grossReturnPercentage)! >= 0 ? "+" : ""}${(dashboardPerformanceIncludesCosts ? periodStats.returnPercentage : periodStats.grossReturnPercentage)!.toFixed(1)}% return`} · ${dashboardPerformanceIncludesCosts ? "after costs" : "before costs"} · ${dashboardPeriodLabel}`}
+          positive={(dashboardPerformanceIncludesCosts ? periodStats.net : periodStats.grossNet) >= 0}
           icon={<BarChart3 size={19} />}
-          colorVariant={periodStats.net >= 0 ? "green" : "amber"}
+          colorVariant={(dashboardPerformanceIncludesCosts ? periodStats.net : periodStats.grossNet) >= 0 ? "green" : "amber"}
+          headerAction={<label className="dashboard-pnl-cost-toggle" title="Include transaction costs in dashboard performance" onClick={(event) => event.stopPropagation()}><span>Costs</span><input type="checkbox" role="switch" checked={dashboardPerformanceIncludesCosts} onChange={(event) => setDashboardPerformanceIncludesCosts(event.target.checked)} aria-label="Include transaction costs in dashboard performance" /></label>}
         />
       </div>
 
@@ -1724,6 +2008,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
           positive
           icon={<TrendingUp size={19} />}
           colorVariant="green"
+          onClick={() => openAverageTradeChart("profit")}
         />
 
         <StatCard
@@ -1734,6 +2019,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
           positive={false}
           icon={<TrendingDown size={19} />}
           colorVariant="red"
+          onClick={() => openAverageTradeChart("loss")}
         />
 
         <StatCard
@@ -1756,8 +2042,9 @@ const Dashboard = ({ user, onAdd }: Props) => {
           positive={(todayPnlIncludesCosts ? todayStats.net : todayStats.gross) >= 0}
           icon={<CalendarDays size={19} />}
           colorVariant={(todayPnlIncludesCosts ? todayStats.net : todayStats.gross) >= 0 ? "green" : "red"}
+          onClick={() => { setDailyPnlPage(0); setDailyPnlOpen(true); }}
           headerAction={(
-            <label className="dashboard-pnl-cost-toggle" title="Include transaction costs in Today P&L">
+            <label className="dashboard-pnl-cost-toggle" title="Include transaction costs in Today P&L" onClick={(event) => event.stopPropagation()}>
               <span>Costs</span>
               <input
                 type="checkbox"
@@ -1792,6 +2079,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
           positive={drawdownFromPeakPercent === 0}
           icon={<TrendingUp size={19} />}
           colorVariant="green"
+          onClick={() => openPeakTradeChart("profit")}
         />
 
         <StatCard
@@ -1807,6 +2095,7 @@ const Dashboard = ({ user, onAdd }: Props) => {
           positive={recoveryFromPeakLossPercent > 0}
           icon={<TrendingDown size={19} />}
           colorVariant="red"
+          onClick={() => openPeakTradeChart("loss")}
         />
       </div>
 
@@ -1963,6 +2252,18 @@ const Dashboard = ({ user, onAdd }: Props) => {
               subtitle: "How profit and loss move over time",
               kind: "echarts",
               echartsOption: profitLossTrendOption,
+              timeInOutcome: (() => {
+                const profitDays = dailyPnlHistory.filter((day) => day.gross > 0).length;
+                const lossDays = dailyPnlHistory.filter((day) => day.gross < 0).length;
+                const totalDays = profitDays + lossDays;
+                return {
+                  profitPercent: totalDays ? (profitDays / totalDays) * 100 : 0,
+                  lossPercent: totalDays ? (lossDays / totalDays) * 100 : 0,
+                  profitDays,
+                  lossDays,
+                  totalDays,
+                };
+              })(),
             })
           }
         >
@@ -1991,10 +2292,110 @@ const Dashboard = ({ user, onAdd }: Props) => {
           highchartsOptions={fullscreenChart.highchartsOptions}
           stockOptions={fullscreenChart.stockOptions}
           defaultChartMode={fullscreenChart.defaultChartMode}
+          drawingStorageKey={`${user.id}.wealth`}
           echartsOption={fullscreenChart.echartsOption}
+          timeInOutcome={fullscreenChart.timeInOutcome}
           onClose={closeFullscreenChart}
         />
         </Suspense>
+      )}
+      {averageTradeChart && (
+        <div className="average-trade-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setAverageTradeChart(null); }}>
+          <section className="average-trade-dialog" role="dialog" aria-modal="true" aria-labelledby="average-trade-dialog-title">
+            <header>
+              <div><span className="eyebrow">TRADE PERFORMANCE</span><h2 id="average-trade-dialog-title">{averageTradeChart.title}</h2><p>{averageTradeChart.subtitle}</p></div>
+              <button type="button" aria-label="Close average trade chart" onClick={() => setAverageTradeChart(null)}><X size={19} /></button>
+            </header>
+            <div className="average-trade-dialog-summary">
+              <article><span>Average per trade</span><strong>{formatCurrency(averageTradeChart.average, user.currency)}</strong></article>
+              <article><span>Trades in period</span><strong>{averageTradeChart.tradeCount}</strong></article>
+            </div>
+            {averageTradeChart.tradeCount ? (
+              <div className="average-trade-dialog-chart"><HighchartsStockChart highcharts={Highcharts} options={averageTradeChart.options} allowChartUpdate={false} /></div>
+            ) : (
+              <div className="average-trade-dialog-empty">No matching trades in this period.</div>
+            )}
+          </section>
+        </div>
+      )}
+      {peakTradeChart && (
+        <div className="peak-trade-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPeakTradeChart(null); }}>
+          <section className="peak-trade-dialog" role="dialog" aria-modal="true" aria-labelledby="peak-trade-dialog-title">
+            <header>
+              <div><span className="eyebrow">ALL-TIME PERFORMANCE</span><h2 id="peak-trade-dialog-title">{peakTradeChart.title}</h2><p>{peakTradeChart.subtitle}</p></div>
+              <button type="button" aria-label="Close peak performance chart" onClick={() => setPeakTradeChart(null)}><X size={19} /></button>
+            </header>
+            <div className="peak-trade-dialog-summary">
+              <article><span>{peakTradeChart.title.replace(" History", "")}</span><strong className={peakTradeChart.title.includes("Profit") ? "profit" : "loss"}>{formatCurrency(peakTradeChart.peak, user.currency)}</strong></article>
+              <article><span>All-time trade result</span><strong>{formatCurrency(peakTradeChart.current, user.currency)}</strong></article>
+              <article><span>{peakTradeChart.changeLabel}</span><strong>{formatCurrency(peakTradeChart.changeValue, user.currency)}</strong><small>{Math.abs(peakTradeChart.peak) > 0 ? `${(peakTradeChart.changeValue / Math.abs(peakTradeChart.peak) * 100).toFixed(1)}%` : "0.0%"} of peak value</small></article>
+              <article><span>Recorded trades</span><strong>{peakTradeChart.tradeCount}</strong></article>
+            </div>
+            {peakTradeChart.tradeCount ? (
+              <div className="peak-trade-dialog-chart"><HighchartsStockChart highcharts={Highcharts} options={peakTradeChart.options} allowChartUpdate={false} /></div>
+            ) : (
+              <div className="peak-trade-dialog-empty">No recorded trades to chart yet.</div>
+            )}
+          </section>
+        </div>
+      )}
+      {dailyPnlOpen && (
+        <div className="daily-pnl-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setDailyPnlOpen(false); }}>
+          <section className="daily-pnl-dialog" role="dialog" aria-modal="true" aria-labelledby="daily-pnl-dialog-title">
+            <header>
+              <div><span className="eyebrow">PERFORMANCE HISTORY</span><h2 id="daily-pnl-dialog-title">Daily profit &amp; loss</h2><p>Every recorded trading day, with the trades that make up its result.</p></div>
+              <div className="daily-pnl-header-actions">
+                <label className="daily-pnl-cost-control"><span>Include costs</span><input type="checkbox" role="switch" checked={todayPnlIncludesCosts} onChange={(event) => { setTodayPnlIncludesCosts(event.target.checked); setDailyPnlPage(0); }} /></label>
+                <button type="button" aria-label="Close daily P&L history" onClick={() => setDailyPnlOpen(false)}><X size={19} /></button>
+              </div>
+            </header>
+            {dailyPnlHistory.length ? <>
+              <div className="daily-pnl-summary-strip" aria-label="All-time daily performance summary">
+                <article><span>Net P&amp;L</span><strong className={dailyPnlSummary.net >= 0 ? "profit" : "loss"}>{formatCurrency(dailyPnlSummary.net, user.currency)}</strong><small>{todayPnlIncludesCosts ? "After costs" : "Before costs"}</small></article>
+                <article><span>Trading days</span><strong>{dailyPnlHistory.length}</strong><small>{dailyPnlSummary.trades} recorded trades</small></article>
+                <article><span>Profitable days</span><strong className="profit">{dailyPnlSummary.profitDays}</strong><small>{dailyPnlSummary.profitDays + dailyPnlSummary.lossDays ? `${Math.round(dailyPnlSummary.profitDays / (dailyPnlSummary.profitDays + dailyPnlSummary.lossDays) * 100)}% of active days` : "No active days"}</small></article>
+                <article><span>Losing days</span><strong className="loss">{dailyPnlSummary.lossDays}</strong><small>Daily net below zero</small></article>
+              </div>
+              <div className="daily-pnl-history-tools">
+                <label className="daily-pnl-search"><Search size={16} /><input type="search" value={dailyPnlSearch} onChange={(event) => { setDailyPnlSearch(event.target.value); setDailyPnlPage(0); }} placeholder="Search notes, categories, or dates" aria-label="Search daily P&L history" /></label>
+                <div className="daily-pnl-filter-group" role="group" aria-label="Filter daily results">
+                  {(["all", "profit", "loss"] as const).map((filter) => <button key={filter} type="button" className={dailyPnlFilter === filter ? "active" : ""} aria-pressed={dailyPnlFilter === filter} onClick={() => { setDailyPnlFilter(filter); setDailyPnlPage(0); }}>{filter === "all" ? "All days" : filter === "profit" ? "Profitable" : "Losing"}</button>)}
+                </div>
+                <label className="daily-pnl-sort"><ArrowDownUp size={14} /><select value={dailyPnlSort} onChange={(event) => { setDailyPnlSort(event.target.value as "newest" | "oldest"); setDailyPnlPage(0); }} aria-label="Sort trading days"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label>
+              </div>
+              <div className="daily-pnl-dialog-list">
+                {visibleDailyPnl.length ? visibleDailyPnl.map((day) => <article className="daily-pnl-day" key={day.key}>
+                  <div className="daily-pnl-day-heading">
+                    <div className="daily-pnl-day-copy">
+                      <strong>{day.date.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</strong>
+                      <div className="daily-pnl-day-summary">
+                        <span>{day.trades.length} {day.trades.length === 1 ? "trade" : "trades"}</span>
+                        <span className="daily-pnl-positive">Profit {formatCurrency(day.profit, user.currency)}</span>
+                        <span className="daily-pnl-negative">Loss {formatCurrency(day.loss, user.currency)}</span>
+                      </div>
+                    </div>
+                    <div className="daily-pnl-day-result"><small>{todayPnlIncludesCosts ? "NET AFTER COSTS" : "NET BEFORE COSTS"}</small><b className={(todayPnlIncludesCosts ? day.net : day.gross) >= 0 ? "profit" : "loss"}>{formatCurrency(todayPnlIncludesCosts ? day.net : day.gross, user.currency)}</b></div>
+                  </div>
+                  <div className="daily-pnl-trades">{day.trades.map((trade) => {
+                    const tradeDate = parseLocalDate(trade.date);
+                    const signedAmount = trade.type === "profit" ? trade.amount : -trade.amount;
+                    const shownAmount = todayPnlIncludesCosts ? signedAmount : signedAmount + (trade.costAmount ?? 0);
+                    return <div className="daily-pnl-trade" key={trade.id}>
+                      <span className="daily-pnl-trade-time">{tradeDate?.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</span>
+                      <span className="daily-pnl-trade-note">{trade.note?.trim() || trade.category || "Trade"}</span>
+                      <small>{trade.category || "Uncategorized"}{(trade.costAmount ?? 0) > 0 ? ` · Costs ${formatCurrency(trade.costAmount ?? 0, user.currency)}` : ""}</small>
+                      <b className={shownAmount >= 0 ? "profit" : "loss"}>{formatCurrency(shownAmount, user.currency)}</b>
+                    </div>;
+                })}</div>
+                </article>) : <div className="daily-pnl-empty"><strong>No matching trading days</strong><span>Adjust your search or result filter to see more history.</span><button type="button" onClick={() => { setDailyPnlSearch(""); setDailyPnlFilter("all"); setDailyPnlPage(0); }}>Clear filters</button></div>}
+              </div>
+              {filteredDailyPnlHistory.length > 0 && <footer className="daily-pnl-pagination">
+                <span>Showing {dailyPnlPage * dailyPnlPageSize + 1}–{Math.min((dailyPnlPage + 1) * dailyPnlPageSize, filteredDailyPnlHistory.length)} of {filteredDailyPnlHistory.length} days · {todayPnlIncludesCosts ? "After costs" : "Before costs"}</span>
+                <div><button type="button" onClick={() => setDailyPnlPage((page) => Math.max(0, page - 1))} disabled={dailyPnlPage === 0} aria-label="Previous days"><ChevronLeft size={16} /> Previous</button><span>Page {dailyPnlPage + 1} of {dailyPnlPageCount}</span><button type="button" onClick={() => setDailyPnlPage((page) => Math.min(dailyPnlPageCount - 1, page + 1))} disabled={dailyPnlPage >= dailyPnlPageCount - 1} aria-label="Next days">Next <ChevronRight size={16} /></button></div>
+              </footer>}
+            </> : <div className="daily-pnl-empty">No trading results have been recorded yet.</div>}
+          </section>
+        </div>
       )}
     </div>
   );

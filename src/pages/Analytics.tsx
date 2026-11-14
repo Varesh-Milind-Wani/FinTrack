@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Highcharts from "highcharts";
 import HighchartsReact from "highcharts-react-official";
 import ReactECharts from "echarts-for-react";
@@ -105,8 +105,24 @@ const Analytics = ({ user, onSave, onOpenNotifications }: Props) => {
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
   const [granularity, setGranularity] = useState("month");
+  const [weekdayChartMode, setWeekdayChartMode] = useState<"pnl" | "volume">("pnl");
+  const [todayKey, setTodayKey] = useState(() => getDateKey(new Date()));
+  const [currentHour, setCurrentHour] = useState(() => new Date().getHours());
   const [selectedWeekday, setSelectedWeekday] = useState<string | null>(null);
   const [selectedWeekdayPage, setSelectedWeekdayPage] = useState(1);
+  useEffect(() => {
+    const refreshLocalDay = () => {
+      const now = new Date();
+      setTodayKey(getDateKey(now));
+      setCurrentHour(now.getHours());
+    };
+    const timer = window.setInterval(refreshLocalDay, 60_000);
+    document.addEventListener("visibilitychange", refreshLocalDay);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshLocalDay);
+    };
+  }, []);
   const dailyPnlVolatilityPoints = useMemo(
     () => calculateDailyPnlVolatility(user.transactions),
     [user.transactions],
@@ -155,7 +171,7 @@ const Analytics = ({ user, onSave, onOpenNotifications }: Props) => {
         && (categoryFilter === "all" || tx.category === categoryFilter)
         && (typeFilter === "all" || tx.type === typeFilter);
     });
-  }, [user.transactions, period, fromDate, toDate, categoryFilter, typeFilter]);
+  }, [user.transactions, period, fromDate, toDate, categoryFilter, typeFilter, todayKey]);
   const dailyFinancialRows = useMemo(() => {
     const byDate = new Map<string, { date: string; net: number }>();
     filteredTransactions.forEach((transaction) => {
@@ -276,6 +292,24 @@ const Analytics = ({ user, onSave, onOpenNotifications }: Props) => {
     ],
   }), [dailyOutcomeRows]);
   const transactionCount = filteredTransactions.length;
+  const monthlyTradeActivity = useMemo(() => {
+    const byMonth = new Map<string, { month: string; total: number; wins: number; losses: number }>();
+    const dates: Date[] = [];
+    filteredTransactions.forEach((transaction) => {
+      const date = parseLocalDate(transaction.date);
+      if (!date) return;
+      dates.push(date);
+      const month = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+      const row = byMonth.get(month) ?? { month, total: 0, wins: 0, losses: 0 };
+      row.total += 1;
+      if (transaction.type === "profit") row.wins += 1;
+      else row.losses += 1;
+      byMonth.set(month, row);
+    });
+    dates.sort((a, b) => a.getTime() - b.getTime());
+    const monthSpan = dates.length ? Math.max(1, (dates.at(-1)!.getFullYear() - dates[0].getFullYear()) * 12 + dates.at(-1)!.getMonth() - dates[0].getMonth() + 1) : 0;
+    return { rows: [...byMonth.values()].sort((a, b) => a.month.localeCompare(b.month)), months: monthSpan, average: monthSpan ? transactionCount / monthSpan : 0 };
+  }, [filteredTransactions, transactionCount]);
   const filteredSummary = useMemo(() => filteredTransactions.reduce((totals, transaction) => {
     if (transaction.type === "profit") {
       totals.totalProfit += transaction.grossAmount ?? transaction.amount;
@@ -951,12 +985,16 @@ const Analytics = ({ user, onSave, onOpenNotifications }: Props) => {
       const points = (Array.isArray(params) ? params : []) as { axisValue?: string; seriesName?: string; value?: number }[];
       if (!points.length) return "";
       const row = weekdayRows.find((weekday) => weekday.name.slice(0, 3) === points[0].axisValue);
-      return row ? `<strong>${row.name}</strong><br/>Gross profit: ${formatMoney(row.profit, user.currency)}<br/>Gross loss: ${formatMoney(-row.loss, user.currency)}<br/>Net P&amp;L after recorded costs: ${formatMoney(row.net, user.currency)}<br/>Trades: ${row.count} across ${row.activeSessions} active dates<br/>Average net per active date: ${formatMoney(row.averageDailyNet, user.currency)}<br/>Median net per active date: ${formatMoney(row.medianDailyNet, user.currency)}` : "";
+      return row ? weekdayChartMode === "volume"
+        ? `<strong>${row.name}</strong><br/>Total trades: ${row.count}<br/>Winning trades: ${row.winningTrades}<br/>Losing trades: ${row.losingTrades}<br/>Active dates: ${row.activeSessions}<br/>Average trades per active date: ${row.activeSessions ? (row.count / row.activeSessions).toFixed(1) : "0.0"}`
+        : `<strong>${row.name}</strong><br/>Gross profit: ${formatMoney(row.profit, user.currency)}<br/>Gross loss: ${formatMoney(-row.loss, user.currency)}<br/>Net P&amp;L after recorded costs: ${formatMoney(row.net, user.currency)}<br/>Trades: ${row.count} across ${row.activeSessions} active dates<br/>Average net per active date: ${formatMoney(row.averageDailyNet, user.currency)}<br/>Median net per active date: ${formatMoney(row.medianDailyNet, user.currency)}` : "";
     } },
     legend: { top: 4, itemWidth: 11, itemHeight: 11, itemGap: 22, textStyle: { color: "#aab5c7", fontSize: 14, fontFamily: "Roboto, Segoe UI, Arial, sans-serif" } },
     xAxis: { type: "category", data: weekdayRows.map((row) => row.name.slice(0, 3)), axisLabel: { color: "#a0aec0", fontSize: 14, fontFamily: "Roboto, Segoe UI, Arial, sans-serif", margin: 15 }, axisTick: { show: false }, axisLine: { lineStyle: { color: "rgba(148, 163, 184, .22)" } }, splitLine: { show: true, lineStyle: { color: CHART_GRID_LINE_COLOR, width: 1 } } },
-    yAxis: { type: "value", axisLabel: { color: "#a0aec0", fontSize: 13, fontFamily: "Roboto, Segoe UI, Arial, sans-serif", margin: 13, formatter: (value: number) => formatMoney(value, user.currency) }, axisLine: { show: false }, axisTick: { show: false }, splitLine: { show: true, lineStyle: { color: CHART_GRID_LINE_COLOR, width: 1 } } },
-    series: [{ name: "Gross profit", type: "bar", barMaxWidth: 26, data: weekdayRows.map((row) => row.profit), itemStyle: { color: "#36d399", borderRadius: [4, 4, 0, 0] } }, { name: "Gross loss", type: "bar", barMaxWidth: 26, data: weekdayRows.map((row) => -row.loss), itemStyle: { color: "#ff6478", borderRadius: [0, 0, 4, 4] } }, { name: "Net P&L", type: "line", data: weekdayRows.map((row) => row.net), symbol: "circle", symbolSize: 7, showSymbol: true, itemStyle: { color: "#4d8dff", borderColor: "#dbeafe", borderWidth: 1.5 }, lineStyle: { color: "#4d8dff", width: 2.5 }, z: 3 }],
+    yAxis: { type: "value", min: weekdayChartMode === "volume" ? 0 : undefined, axisLabel: { color: "#a0aec0", fontSize: 13, fontFamily: "Roboto, Segoe UI, Arial, sans-serif", margin: 13, formatter: (value: number) => weekdayChartMode === "volume" ? `${value}` : formatMoney(value, user.currency) }, axisLine: { show: false }, axisTick: { show: false }, splitLine: { show: true, lineStyle: { color: CHART_GRID_LINE_COLOR, width: 1 } } },
+    series: weekdayChartMode === "volume"
+      ? [{ name: "Winning trades", type: "bar", stack: "trades", barMaxWidth: 30, data: weekdayRows.map((row) => row.winningTrades), itemStyle: { color: "#36d399", borderRadius: [4, 4, 0, 0] } }, { name: "Losing trades", type: "bar", stack: "trades", barMaxWidth: 30, data: weekdayRows.map((row) => row.losingTrades), itemStyle: { color: "#ff6478", borderRadius: [4, 4, 0, 0] } }]
+      : [{ name: "Gross profit", type: "bar", barMaxWidth: 26, data: weekdayRows.map((row) => row.profit), itemStyle: { color: "#36d399", borderRadius: [4, 4, 0, 0] } }, { name: "Gross loss", type: "bar", barMaxWidth: 26, data: weekdayRows.map((row) => -row.loss), itemStyle: { color: "#ff6478", borderRadius: [0, 0, 4, 4] } }, { name: "Net P&L", type: "line", data: weekdayRows.map((row) => row.net), symbol: "circle", symbolSize: 7, showSymbol: true, itemStyle: { color: "#4d8dff", borderColor: "#dbeafe", borderWidth: 1.5 }, lineStyle: { color: "#4d8dff", width: 2.5 }, z: 3 }],
   };
   const weekdayChartEvents = {
     click: (event: { dataIndex?: number; axisValue?: string; name?: string }) => {
@@ -972,7 +1010,13 @@ const Analytics = ({ user, onSave, onOpenNotifications }: Props) => {
   const bestWeekday = activeWeekdays.reduce<(typeof weekdayRows)[number] | null>((best, row) => !best || row.net > best.net ? row : best, null);
   const bestAverageWeekday = activeWeekdays.reduce<(typeof weekdayRows)[number] | null>((best, row) => !best || row.averageDailyNet > best.averageDailyNet ? row : best, null);
   const bestMedianWeekday = activeWeekdays.reduce<(typeof weekdayRows)[number] | null>((best, row) => !best || row.medianDailyNet > best.medianDailyNet ? row : best, null);
-  const weekdayOutlook = useMemo(() => getWeekdayOutlook(user.transactions, new Date()), [user.transactions]);
+  const weekdayOutlook = useMemo(() => {
+    const now = new Date();
+    const isTradingWeekday = now.getDay() >= 1 && now.getDay() <= 5;
+    if (isTradingWeekday && currentHour < 19) now.setDate(now.getDate() - 1);
+    return getWeekdayOutlook(user.transactions, now);
+  }, [user.transactions, todayKey, currentHour]);
+  const weekdayOutlookIsToday = getDateKey(weekdayOutlook.date) === todayKey;
   const activeFilterCount = Number(period !== "all") + Number(Boolean(fromDate)) + Number(Boolean(toDate)) + Number(categoryFilter !== "all") + Number(typeFilter !== "all");
 
   return (
@@ -1030,10 +1074,30 @@ const Analytics = ({ user, onSave, onOpenNotifications }: Props) => {
           ["Maximum drawdown", formatMoney(drawdownSummary.amount, user.currency), "Largest daily peak-to-trough decline", false],
           ["Largest gain", tradeDistribution.best == null ? "—" : formatMoney(tradeDistribution.best, user.currency), "Best single transaction record", true],
           ["Largest loss", tradeDistribution.worst == null ? "—" : formatMoney(tradeDistribution.worst, user.currency), "Worst single transaction record", false],
+          ["Average trades per month", monthlyTradeActivity.months ? Math.round(monthlyTradeActivity.average).toLocaleString() : "—", monthlyTradeActivity.months ? `${transactionCount} saved trades across ${monthlyTradeActivity.months} calendar months` : "No matching trade history", true],
         ].map(([label, value, help, positive]) => <article className="analytics-kpi-card" key={String(label)} title={String(help)}>
-          <span>{label}</span><strong className={positive ? "positive" : "negative"}>{value}</strong><small>{help}</small>
+          <span>{label}</span><strong className={String(label) === "Average trades per month" ? "neutral" : positive ? "positive" : "negative"}>{value}</strong><small>{help}</small>
         </article>)}
       </section>
+
+      <ChartPanel className="analytics-trade-volume-chart" title="Monthly trade volume" subtitle={`Recorded trades by calendar month · ${transactionCount} matching trades in the current analytics range`}>
+        <EChartsChart option={{
+          backgroundColor: "transparent",
+          grid: { left: 58, right: 20, top: 24, bottom: 42, containLabel: true },
+          tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, backgroundColor: "#111722", borderColor: "rgba(148, 163, 184, .22)", textStyle: { color: "#e6edf7" }, formatter: (params: unknown) => {
+            const points = (Array.isArray(params) ? params : []) as { axisValue?: string; seriesName?: string; value?: number }[];
+            const row = monthlyTradeActivity.rows.find((item) => item.month === points[0]?.axisValue);
+            return row ? `<strong>${row.month}</strong><br/>Total trades: ${row.total}<br/>Winning trades: ${row.wins}<br/>Losing trades: ${row.losses}` : "";
+          } },
+          legend: { top: 0, textStyle: { color: "#aab5c7" } },
+          xAxis: { type: "category", data: monthlyTradeActivity.rows.map((row) => row.month), axisLabel: { color: "#8795a9", hideOverlap: true }, axisTick: { show: false }, axisLine: { lineStyle: { color: "rgba(148, 163, 184, .2)" } } },
+          yAxis: { type: "value", min: 0, minInterval: 1, axisLabel: { color: "#8795a9", formatter: (value: number) => `${value}` }, splitLine: { lineStyle: { color: CHART_GRID_LINE_COLOR } } },
+          series: [
+            { name: "Winning trades", type: "bar", stack: "volume", barMaxWidth: 28, data: monthlyTradeActivity.rows.map((row) => row.wins), itemStyle: { color: "#36d399", borderRadius: [4, 4, 0, 0] } },
+            { name: "Losing trades", type: "bar", stack: "volume", barMaxWidth: 28, data: monthlyTradeActivity.rows.map((row) => row.losses), itemStyle: { color: "#ff6478", borderRadius: [4, 4, 0, 0] } },
+          ],
+        }} style={{ height: 280, width: "100%" }} notMerge lazyUpdate />
+      </ChartPanel>
 
       <ChartPanel className="analytics-cumulative-chart" title="Cumulative profit & loss" subtitle="Cumulative recorded net P&L over the selected range">
         <div className="analytics-chart-controls"><span>Group by</span>{[["day", "Daily"], ["week", "Weekly"], ["month", "Monthly"], ["year", "Yearly"]].map(([value, label]) => <button className={granularity === value ? "active" : ""} type="button" key={value} onClick={() => setGranularity(value)}>{label}</button>)}</div>
@@ -1350,9 +1414,9 @@ const Analytics = ({ user, onSave, onOpenNotifications }: Props) => {
             <span>Daily total uses net results after recorded costs</span>
           </div>
         </ChartPanel>
-        <section className={`analytics-weekday-outlook ${weekdayOutlook.status}`} aria-label="Next trading day reminder">
+        <section className={`analytics-weekday-outlook ${weekdayOutlook.status}`} aria-label={weekdayOutlookIsToday ? "Today's weekday outlook" : "Next trading day reminder"}>
           <div className="analytics-weekday-outlook-icon"><BellRing size={19} /></div>
-          <div className="analytics-weekday-outlook-copy"><span className="eyebrow">NEXT TRADING DAY · {weekdayOutlook.dayName.toUpperCase()}</span><h2>{weekdayOutlook.status === "strong" ? `${weekdayOutlook.dayName} has been a stronger day in your history` : weekdayOutlook.status === "caution" ? `A discipline reminder for ${weekdayOutlook.dayName}` : `Your ${weekdayOutlook.dayName} outlook`}</h2><p>{weekdayOutlook.message}</p></div>
+          <div className="analytics-weekday-outlook-copy"><span className="eyebrow">{weekdayOutlookIsToday ? "TODAY'S OUTLOOK" : "NEXT TRADING DAY"} · {weekdayOutlook.dayName.toUpperCase()}</span><h2>{weekdayOutlook.status === "strong" ? `${weekdayOutlook.dayName} has been a stronger day in your history` : weekdayOutlook.status === "caution" ? `A discipline reminder for ${weekdayOutlook.dayName}` : `Your ${weekdayOutlook.dayName} outlook`}</h2><p>{weekdayOutlook.message}</p></div>
           <button type="button" onClick={onOpenNotifications}><span>Notification center</span><ArrowRight size={16} /></button>
         </section>
       </div>
@@ -1435,6 +1499,7 @@ const Analytics = ({ user, onSave, onOpenNotifications }: Props) => {
             <div><span>Best average session</span><strong>{bestAverageWeekday ? bestAverageWeekday.name : "—"}</strong><small>{bestAverageWeekday ? `${formatMoney(bestAverageWeekday.averageDailyNet, user.currency)} average net per active date` : "No trades in this range"}</small></div>
             <div><span>Best typical session</span><strong>{bestMedianWeekday ? bestMedianWeekday.name : "—"}</strong><small>{bestMedianWeekday ? `${formatMoney(bestMedianWeekday.medianDailyNet, user.currency)} median net per active date` : "No trades in this range"}</small></div>
           </div>
+          <div className="analytics-weekday-chart-controls" role="group" aria-label="Weekday chart metric"><span>View</span><button type="button" className={weekdayChartMode === "pnl" ? "active" : ""} onClick={() => setWeekdayChartMode("pnl")}>Profit &amp; loss</button><button type="button" className={weekdayChartMode === "volume" ? "active" : ""} onClick={() => setWeekdayChartMode("volume")}>Trade volume</button><small>Based on {filteredTransactions.length} matching saved trades</small></div>
           <EChartsChart option={weekdayOption} onEvents={weekdayChartEvents} style={{ height: 420, width: "100%", cursor: "pointer" }} notMerge lazyUpdate />
           <div className="analytics-weekday-summary">{weekdayRows.map((row) => {
             const isBest = row.count > 0 && row.net === bestWeekdayNet;
@@ -1444,6 +1509,7 @@ const Analytics = ({ user, onSave, onOpenNotifications }: Props) => {
               <small className="analytics-weekday-metric-label">Total net P&amp;L</small>
               <strong>{formatMoney(row.net, user.currency)}</strong>
               <div className="analytics-weekday-win-summary"><span>Win rate</span><b>{row.count ? `${Math.round(row.winningTrades / row.count * 100)}%` : "—"}</b></div>
+              <div className="analytics-weekday-win-summary"><span>Avg trades / active date</span><b>{row.activeSessions ? (row.count / row.activeSessions).toFixed(1) : "—"}</b></div>
               <div className="analytics-weekday-win-summary"><span>Avg net / active date</span><b>{row.activeSessions ? formatMoney(row.averageDailyNet, user.currency) : "—"}</b></div>
               <div className="analytics-weekday-win-summary"><span>Median net / active date</span><b>{row.activeSessions ? formatMoney(row.medianDailyNet, user.currency) : "—"}</b></div>
               <div className="analytics-weekday-winbar" role="img" aria-label={row.count ? `${row.winningTrades} wins and ${row.losingTrades} losses` : "No trades"}><i style={{ width: `${row.count ? row.winningTrades / row.count * 100 : 0}%` }} /></div>

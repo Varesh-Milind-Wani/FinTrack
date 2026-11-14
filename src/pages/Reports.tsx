@@ -1,4 +1,4 @@
-import { BarChart3, CalendarDays, ChevronLeft, ChevronRight, Lock, Search, ShieldCheck, TrendingDown, TrendingUp, Unlock, X } from "lucide-react";
+import { BarChart3, CalendarDays, ChevronLeft, ChevronRight, DollarSign, Lock, Search, ShieldCheck, TrendingDown, TrendingUp, Unlock, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { UserAccount } from "../types/finance";
 import { formatCurrency } from "../utils/money";
@@ -17,6 +17,8 @@ type MonthlyReport = {
   transactions: number;
 };
 
+type CostRecord = { id: string; date: string; amount: number; note: string; category: string };
+
 const REPORT_PAGE_SIZE = 20;
 
 const Reports = ({ user, onToggleMonthLock }: Props) => {
@@ -26,6 +28,28 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
   const [pinNotice, setPinNotice] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [search, setSearch] = useState("");
+  const [costHistoryOpen, setCostHistoryOpen] = useState(false);
+  const [costSearch, setCostSearch] = useState("");
+  const costRecords = useMemo<CostRecord[]>(() => user.transactions
+    .filter((transaction) => (transaction.costAmount ?? 0) > 0)
+    .map((transaction) => ({ id: transaction.id, date: transaction.date, amount: transaction.costAmount ?? 0, note: transaction.note || "Transaction cost", category: transaction.category || "Uncategorized" }))
+    .sort((left, right) => right.date.localeCompare(left.date)), [user.transactions]);
+  const visibleCostRecords = useMemo(() => {
+    const query = costSearch.trim().toLocaleLowerCase();
+    if (!query) return costRecords;
+    return costRecords.filter((record) => [record.date, record.note, record.category, String(record.amount), formatCurrency(record.amount, user.currency)].join(" ").toLocaleLowerCase().includes(query));
+  }, [costRecords, costSearch, user.currency]);
+  const costGroups = useMemo(() => {
+    const groups = new Map<string, { monthKey: string; total: number; records: CostRecord[] }>();
+    visibleCostRecords.forEach((record) => {
+      const monthKey = getMonthKey(record.date);
+      const group = groups.get(monthKey) ?? { monthKey, total: 0, records: [] };
+      group.total += record.amount;
+      group.records.push(record);
+      groups.set(monthKey, group);
+    });
+    return [...groups.values()].sort((left, right) => right.monthKey.localeCompare(left.monthKey));
+  }, [visibleCostRecords]);
   const reports = useMemo(() => {
     const byMonth = new Map<string, MonthlyReport>();
 
@@ -38,8 +62,10 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
         transactions: 0,
       };
 
-      if (transaction.type === "profit") current.profit += transaction.amount;
-      else current.loss += transaction.amount;
+      const netSigned = transaction.type === "profit" ? transaction.amount : -transaction.amount;
+      const grossSigned = netSigned + (transaction.costAmount ?? 0);
+      if (grossSigned >= 0) current.profit += grossSigned;
+      else current.loss += Math.abs(grossSigned);
       current.transactions += 1;
       byMonth.set(monthKey, current);
     });
@@ -80,6 +106,7 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
     }),
     { profit: 0, loss: 0, transactions: 0 },
   ), [reports]);
+  const totalCosts = useMemo(() => costRecords.reduce((sum, record) => sum + record.amount, 0), [costRecords]);
 
   const handleMonthLockClick = (monthKey: string, locked: boolean) => {
     setPinNotice(null);
@@ -122,7 +149,7 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
         <div>
           <span className="eyebrow">MONTHLY REPORTS</span>
           <h1>Monthly performance</h1>
-          <p>Review profit and loss by month, then lock completed months to protect their records.</p>
+          <p>Review monthly profit and loss before transaction costs, track costs separately, and lock completed months.</p>
         </div>
         <div className="reports-heading-badge"><CalendarDays size={17} /><span>{reports.length} months tracked</span></div>
       </div>
@@ -130,7 +157,8 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
       <div className="report-summary-grid">
         <ReportSummary label="Total profit" value={formatCurrency(totals.profit, user.currency)} detail={`${totals.transactions} transactions recorded`} icon={<TrendingUp size={19} />} kind="profit" />
         <ReportSummary label="Total loss" value={formatCurrency(totals.loss, user.currency)} detail="All recorded losing trades" icon={<TrendingDown size={19} />} kind="loss" />
-        <ReportSummary label="Net performance" value={formatCurrency(totals.profit - totals.loss, user.currency)} detail={totals.profit >= totals.loss ? "Positive overall performance" : "Review your monthly results"} icon={<BarChart3 size={19} />} kind={totals.profit >= totals.loss ? "net-positive" : "net-negative"} />
+        <ReportSummary label="Net performance" value={formatCurrency(totals.profit - totals.loss, user.currency)} detail="Before transaction costs" icon={<BarChart3 size={19} />} kind={totals.profit >= totals.loss ? "net-positive" : "net-negative"} />
+        <ReportSummary label="Transaction costs" value={formatCurrency(totalCosts, user.currency)} detail={`${costRecords.length} transactions with recorded costs · View history`} icon={<DollarSign size={19} />} kind="cost" onClick={() => setCostHistoryOpen(true)} />
       </div>
 
       <div className="reports-lock-notice">
@@ -154,9 +182,9 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
             <tr>
               <th>Month</th>
               <th>Transactions</th>
-              <th>Profit</th>
-              <th>Loss</th>
-              <th>Net P&amp;L</th>
+              <th>Profit before costs</th>
+              <th>Loss before costs</th>
+              <th>Net before costs</th>
               <th>Status</th>
               <th aria-label="Month lock action" />
             </tr>
@@ -207,6 +235,24 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
           </nav>
         </div>}
       </div>
+      {costHistoryOpen && (
+        <div className="modal-overlay reports-cost-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setCostHistoryOpen(false); }}>
+          <section className="transaction-modal reports-cost-modal" role="dialog" aria-modal="true" aria-labelledby="reports-cost-title">
+            <div className="modal-header reports-cost-heading"><div><span className="eyebrow">TRANSACTION COSTS</span><h2 id="reports-cost-title">Cost history</h2><p><span>{costRecords.length} records</span><i /> <span>Total <strong>{formatCurrency(totalCosts, user.currency)}</strong></span></p></div><button type="button" className="close-button" aria-label="Close cost history" onClick={() => setCostHistoryOpen(false)}><X size={18} /></button></div>
+            <div className="reports-cost-toolbar">
+              <div className="reports-cost-search"><Search size={17} /><input aria-label="Search cost history" value={costSearch} onChange={(event) => setCostSearch(event.target.value)} placeholder="Search date, category, or transaction" />{costSearch && <button type="button" aria-label="Clear cost history search" onClick={() => setCostSearch("")}>Clear</button>}</div>
+              <span className="reports-cost-result-count">{visibleCostRecords.length} records across {costGroups.length} {costGroups.length === 1 ? "month" : "months"}</span>
+            </div>
+            <div className="reports-cost-list">
+              {costGroups.map((group) => <section className="reports-cost-month" key={group.monthKey}>
+                <header><div className="reports-cost-month-label"><span className="reports-cost-month-marker" /><div><strong>{getMonthLabel(group.monthKey)}</strong><span>{group.records.length} {group.records.length === 1 ? "transaction" : "transactions"}</span></div></div><div className="reports-cost-month-total"><small>MONTH TOTAL</small><b>{formatCurrency(group.total, user.currency)}</b></div></header>
+                {group.records.map((record) => <article key={record.id}><div className="reports-cost-date"><strong>{formatDate(record.date)}</strong><span>{record.note} <i /> {record.category}</span></div><b>{formatCurrency(record.amount, user.currency)}</b></article>)}
+              </section>)}
+              {visibleCostRecords.length === 0 && <p className="reports-cost-empty">{costRecords.length ? "No cost records match your search." : "No transaction costs have been recorded yet."}</p>}
+            </div>
+          </section>
+        </div>
+      )}
       {unlockMonthKey && (
         <div className="modal-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setUnlockMonthKey(null); }}>
           <form className="transaction-modal month-unlock-modal" role="dialog" aria-modal="true" aria-labelledby="month-unlock-title" onSubmit={(event) => void handleUnlockMonth(event)}>
@@ -236,8 +282,10 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
   );
 };
 
-const ReportSummary = ({ label, value, detail, icon, kind }: { label: string; value: string; detail: string; icon: React.ReactNode; kind: string }) => (
-  <div className={`report-summary-card ${kind}`}>
+const formatDate = (date: string) => new Intl.DateTimeFormat(undefined, { year: "numeric", month: "short", day: "numeric" }).format(new Date(`${date.slice(0, 10)}T00:00:00`));
+
+const ReportSummary = ({ label, value, detail, icon, kind, onClick }: { label: string; value: string; detail: string; icon: React.ReactNode; kind: string; onClick?: () => void }) => (
+  <div className={`report-summary-card ${kind}${onClick ? " clickable" : ""}`} onClick={onClick} onKeyDown={onClick ? (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onClick(); } } : undefined} role={onClick ? "button" : undefined} tabIndex={onClick ? 0 : undefined}>
     <div className="report-summary-top"><span>{label}</span><div className="report-summary-icon">{icon}</div></div>
     <strong>{value}</strong><small>{detail}</small>
   </div>

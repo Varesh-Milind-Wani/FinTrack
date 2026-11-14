@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarDays,
   Check,
+  CircleDollarSign,
   Database,
+  Download,
+  Globe2,
   KeyRound,
   ListFilter,
   Lock,
@@ -12,7 +15,11 @@ import {
   RotateCcw,
   Save,
   Search,
+  ShieldCheck,
   Trash2,
+  Upload,
+  Wallet,
+  WalletCards,
 } from "lucide-react";
 
 import type { DefaultCostSchedule, UserAccount } from "../types/finance";
@@ -20,6 +27,8 @@ import { formatCurrency } from "../utils/money";
 import { calculateCurrentBalance, getAuthoritativeBalance } from "../utils/balance";
 import { createBalancePinSalt, hashBalancePin, verifyBalancePin } from "../utils/balancePin";
 import { usePersistentState } from "../hooks/usePersistentState";
+import { useAppDialog } from "../components/AppDialog";
+import { createApplicationBackup, readApplicationBackupFile, restoreApplicationBackup } from "../utils/applicationBackup";
 
 interface Props {
   user: UserAccount;
@@ -27,9 +36,12 @@ interface Props {
 }
 
 const Settings = ({ user, onSave }: Props) => {
+  const { alert: showAlert, confirm: showConfirm } = useAppDialog();
+  const backupInputRef = useRef<HTMLInputElement>(null);
+  const [backupStatus, setBackupStatus] = useState<string | null>(null);
   const currentBalance = useMemo(() => {
     return getAuthoritativeBalance(user);
-  }, [user.startingBalance, user.transactions, user.currentBalance]);
+  }, [user]);
 
   const [startingBalance, setStartingBalance] = useState(
     String(user.startingBalance)
@@ -39,6 +51,7 @@ const Settings = ({ user, onSave }: Props) => {
   );
   const [showUnlockPrompt, setShowUnlockPrompt] = useState(false);
   const [unlockPassword, setUnlockPassword] = useState("");
+  const [unlockMethod, setUnlockMethod] = useState<"pin" | "account">("pin");
   const [unlockStatus, setUnlockStatus] = useState<string | null>(null);
   const [currentBalancePassword, setCurrentBalancePassword] = useState("");
   const [newBalancePassword, setNewBalancePassword] = useState("");
@@ -52,6 +65,7 @@ const Settings = ({ user, onSave }: Props) => {
   const [currency, setCurrency] = useState(
     user.currency ?? "INR"
   );
+  const [dailyLossLimit, setDailyLossLimit] = useState(String(user.dailyLossLimit ?? 0));
   const [investmentIncluded, setInvestmentIncluded] = useState(
     user.investmentIncluded ?? false
   );
@@ -73,11 +87,15 @@ const Settings = ({ user, onSave }: Props) => {
     setIsStartingBalanceLocked(user.startingBalanceLocked ?? false);
     setCurrentBalanceInput(String(user.currentBalance ?? currentBalance));
     setCurrency(user.currency ?? "INR");
+    setDailyLossLimit(String(user.dailyLossLimit ?? 0));
     setInvestmentIncluded(user.investmentIncluded ?? false);
     setSchedules(user.defaultCostSchedules ?? []);
   }, [
     user.currency,
+    user.dailyLossLimit,
     user.startingBalance,
+    user.startingBalanceLocked,
+    user.investmentIncluded,
     user.defaultCostSchedules,
     user.currentBalance,
     currentBalance,
@@ -86,6 +104,7 @@ const Settings = ({ user, onSave }: Props) => {
   const handleSave = () => {
     const nextBalance = Number(startingBalance);
     const nextCurrentBalance = Number(currentBalanceInput);
+    const nextDailyLossLimit = Number(dailyLossLimit);
 
     // If starting balance is locked, don't allow changes to it
     if (isStartingBalanceLocked && user.startingBalanceLocked && nextBalance !== user.startingBalance) {
@@ -103,6 +122,11 @@ const Settings = ({ user, onSave }: Props) => {
       return;
     }
 
+    if (!Number.isFinite(nextDailyLossLimit) || nextDailyLossLimit < 0) {
+      setStatus("Daily loss limit must be zero or a positive amount.");
+      return;
+    }
+
     const balanceBeforeManualAdjustment = calculateCurrentBalance({
       ...user,
       startingBalance: nextBalance,
@@ -117,24 +141,27 @@ const Settings = ({ user, onSave }: Props) => {
       // preserve it instead of resetting the balance back to the raw total.
       balanceAdjustment: nextCurrentBalance - balanceBeforeManualAdjustment,
       currency,
+      dailyLossLimit: nextDailyLossLimit,
       investmentIncluded,
       defaultCostAmount: user.defaultCostAmount ?? 0,
       defaultCostSchedules: schedules,
       transactions: user.transactions,
     };
 
-    onSave(updatedUser);
-    setStatus("Settings saved successfully.");
+    try {
+      onSave(updatedUser);
+      setStatus("Settings saved successfully.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Settings could not be saved. Please try again.");
+    }
   };
 
   const handleLockToggle = () => {
     setPasswordStatus(null);
     setUnlockStatus(null);
     if (isStartingBalanceLocked) {
-      if (!user.startingBalancePasswordHash || !user.startingBalancePasswordSalt) {
-        setPasswordStatus("Set a 4-digit PIN below before unlocking the starting balance.");
-        return;
-      }
+      setUnlockMethod(user.startingBalancePasswordHash && user.startingBalancePasswordSalt ? "pin" : "account");
+      setUnlockPassword("");
       setShowUnlockPrompt(true);
       return;
     }
@@ -147,21 +174,32 @@ const Settings = ({ user, onSave }: Props) => {
   };
 
   const handleUnlockBalance = async () => {
-    if (!user.startingBalancePasswordHash || !user.startingBalancePasswordSalt) return;
     setUnlockStatus(null);
     try {
-      if (!/^\d{4}$/.test(unlockPassword)) {
-        setUnlockStatus("Enter your 4-digit PIN.");
-        return;
-      }
-      if (!(await verifyBalancePin(unlockPassword, user))) {
-        setUnlockStatus("Incorrect PIN. Please try again.");
-        return;
+      if (unlockMethod === "account") {
+        if (!unlockPassword) {
+          setUnlockStatus("Enter your account password.");
+          return;
+        }
+        if (unlockPassword !== user.password) {
+          setUnlockStatus("Incorrect account password. Please try again.");
+          return;
+        }
+      } else {
+        if (!user.startingBalancePasswordHash || !user.startingBalancePasswordSalt) return;
+        if (!/^\d{4}$/.test(unlockPassword)) {
+          setUnlockStatus("Enter your 4-digit PIN.");
+          return;
+        }
+        if (!(await verifyBalancePin(unlockPassword, user))) {
+          setUnlockStatus("Incorrect PIN. Please try again.");
+          return;
+        }
       }
       setIsStartingBalanceLocked(false);
       setShowUnlockPrompt(false);
       setUnlockPassword("");
-      setUnlockStatus("PIN verified. Save settings to apply your changes.");
+      setUnlockStatus("Verified. Save settings to apply your changes.");
       setPasswordStatus("Starting balance unlocked. Save settings to apply your changes.");
     } catch {
       setUnlockStatus("PIN verification is unavailable in this browser.");
@@ -252,8 +290,13 @@ const Settings = ({ user, onSave }: Props) => {
       : [...schedules, nextSchedule]
     ).sort((left, right) => right.startDate.localeCompare(left.startDate));
 
-    setSchedules(nextSchedules);
-    onSave({ ...user, defaultCostSchedules: nextSchedules });
+    try {
+      onSave({ ...user, defaultCostSchedules: nextSchedules });
+      setSchedules(nextSchedules);
+    } catch (error) {
+      setScheduleStatus(error instanceof Error ? error.message : "Cost schedule could not be saved.");
+      return;
+    }
     setScheduleName("");
     setScheduleDate("");
     setScheduleAmount("");
@@ -283,8 +326,14 @@ const Settings = ({ user, onSave }: Props) => {
 
   const handleDeleteSchedule = (id: string) => {
     const nextSchedules = schedules.filter((schedule) => schedule.id !== id);
-    setSchedules(nextSchedules);
-    onSave({ ...user, defaultCostSchedules: nextSchedules });
+    try {
+      onSave({ ...user, defaultCostSchedules: nextSchedules });
+      setSchedules(nextSchedules);
+      setScheduleStatus("Cost schedule deleted.");
+      if (editingScheduleId === id) handleClearScheduleForm();
+    } catch (error) {
+      setScheduleStatus(error instanceof Error ? error.message : "Cost schedule could not be deleted.");
+    }
   };
 
   const today = new Date();
@@ -316,53 +365,87 @@ const Settings = ({ user, onSave }: Props) => {
     }));
   };
 
+  const handleExportApplicationData = () => {
+    try {
+      const backup = createApplicationBackup();
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `fintrack-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setBackupStatus("Full FinTrack backup downloaded with all saved accounts, records, and app preferences.");
+    } catch (error) {
+      setBackupStatus(error instanceof Error ? error.message : "Could not export application data.");
+    }
+  };
+
+  const handleImportApplicationData = async (file?: File) => {
+    if (!file) return;
+    setBackupStatus(null);
+    try {
+      const validated = await readApplicationBackupFile(file);
+      const { accounts, transactions, investments, expenses, incomes, withdrawals } = validated.recordCounts;
+      const confirmed = await showConfirm(
+        `Restore ${accounts} account${accounts === 1 ? "" : "s"} and all saved data (${transactions} trades, ${investments} investments, ${expenses} expenses, ${incomes} income entries, and ${withdrawals} withdrawals)? This replaces all FinTrack data in this browser. Export your current backup first if you may need it.`,
+        "Restore full application backup",
+      );
+      if (!confirmed) return;
+      restoreApplicationBackup(validated);
+      window.location.reload();
+    } catch (error) {
+      await showAlert(error instanceof Error ? error.message : "Could not restore this backup.", "Import failed");
+    } finally {
+      if (backupInputRef.current) backupInputRef.current.value = "";
+    }
+  };
+
   return (
     <div className="page-content settings-page">
       <div className="page-heading">
         <div>
           <span className="eyebrow">ACCOUNT</span>
-
           <h1>Settings</h1>
-
-          <p>Manage your account balance, currency, and security settings.</p>
+          <p>Manage balances, account security, and trading cost defaults.</p>
         </div>
       </div>
 
+      <nav className="settings-section-nav" aria-label="Settings sections">
+        <a href="#settings-account-defaults"><CircleDollarSign size={15} /> Account</a>
+        <a href="#settings-account-summary"><WalletCards size={15} /> Balance</a>
+        <a href="#settings-balance-security"><ShieldCheck size={15} /> Security</a>
+        <a href="#settings-cost-schedules"><Database size={15} /> Trading costs</a>
+        <a href="#settings-data-backup"><Download size={15} /> Backup</a>
+      </nav>
+
       <div className="charts-two-column">
-        <div className="chart-panel">
+        <div className="chart-panel" id="settings-account-defaults">
           <div className="chart-panel-header">
             <div>
-              <h3>Account defaults</h3>
+              <h3><span className="settings-heading-icon account"><Globe2 size={17} /></span>Account defaults</h3>
               <p>Set your starting balance and preferred display currency.</p>
             </div>
           </div>
           <div className="form-grid">
             <div className="form-span-full">
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
-                <span>Starting balance</span>
+              <div className="settings-balance-label-row">
+                <label htmlFor="settings-starting-balance">Starting balance</label>
                 <button
                   type="button"
                   onClick={handleLockToggle}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "4px",
-                    padding: "4px 8px",
-                    background: isStartingBalanceLocked ? "rgba(239, 68, 68, 0.1)" : "rgba(59, 130, 246, 0.1)",
-                    border: `1px solid ${isStartingBalanceLocked ? "#ef4444" : "#3b82f6"}`,
-                    borderRadius: "4px",
-                    color: isStartingBalanceLocked ? "#ef4444" : "#3b82f6",
-                    cursor: "pointer",
-                    fontSize: "12px",
-                    fontWeight: 600,
-                  }}
+                  className={`settings-lock-button ${isStartingBalanceLocked ? "locked" : "unlocked"}`}
                   title={isStartingBalanceLocked ? "Click to unlock starting balance" : "Click to lock starting balance"}
+                  aria-pressed={isStartingBalanceLocked}
                 >
                   {isStartingBalanceLocked ? <Lock size={14} /> : <LockOpen size={14} />}
                   {isStartingBalanceLocked ? "Locked" : "Unlocked"}
                 </button>
               </div>
               <input
+                id="settings-starting-balance"
                 type="number"
                 min="0"
                 value={startingBalance}
@@ -373,25 +456,23 @@ const Settings = ({ user, onSave }: Props) => {
                 }}
                 disabled={isStartingBalanceLocked}
                 placeholder="5000"
-                style={{
-                  opacity: isStartingBalanceLocked ? 0.5 : 1,
-                  cursor: isStartingBalanceLocked ? "not-allowed" : "text",
-                }}
+                className={isStartingBalanceLocked ? "settings-locked-input" : undefined}
               />
+              <span className="settings-field-help">The opening amount used to calculate your trading balance.</span>
               {showUnlockPrompt && isStartingBalanceLocked && (
                 <div className="balance-unlock-form">
                   <label>
-                    4-digit PIN
+                    {unlockMethod === "pin" ? "4-digit PIN" : "Account password"}
                     <input
                       type="password"
-                      inputMode="numeric"
-                      pattern="[0-9]*"
-                      maxLength={4}
+                      inputMode={unlockMethod === "pin" ? "numeric" : undefined}
+                      pattern={unlockMethod === "pin" ? "[0-9]*" : undefined}
+                      maxLength={unlockMethod === "pin" ? 4 : undefined}
                       autoComplete="current-password"
                       value={unlockPassword}
-                      onChange={(event) => { setUnlockPassword(event.target.value.replace(/\D/g, "").slice(0, 4)); setUnlockStatus(null); }}
+                      onChange={(event) => { setUnlockPassword(unlockMethod === "pin" ? event.target.value.replace(/\D/g, "").slice(0, 4) : event.target.value); setUnlockStatus(null); }}
                       onKeyDown={(event) => { if (event.key === "Enter") void handleUnlockBalance(); }}
-                      placeholder="Enter 4-digit PIN"
+                      placeholder={unlockMethod === "pin" ? "Enter 4-digit PIN" : "Enter account password"}
                     />
                   </label>
                   <button type="button" className="primary-button" onClick={() => void handleUnlockBalance()}>
@@ -400,17 +481,20 @@ const Settings = ({ user, onSave }: Props) => {
                   <button type="button" className="secondary-button" onClick={() => { setShowUnlockPrompt(false); setUnlockPassword(""); setUnlockStatus(null); }}>
                     Cancel
                   </button>
+                  <button type="button" className="balance-pin-reset-button" onClick={() => { setUnlockMethod(unlockMethod === "pin" ? "account" : "pin"); setUnlockPassword(""); setUnlockStatus(null); }}>
+                    {unlockMethod === "pin" ? "Use account password" : "Use 4-digit PIN"}
+                  </button>
                 </div>
               )}
               {unlockStatus && (
-                <div className={unlockStatus.startsWith("PIN verified") ? "field-hint" : "error-message"} role="status">
+                <div className={unlockStatus.startsWith("Verified") ? "field-hint" : "error-message"} role="status">
                   {unlockStatus}
                 </div>
               )}
             </div>
 
             <label>
-              Currency
+              <span className="settings-field-label">Display currency</span>
 
               <select
                 value={currency}
@@ -422,15 +506,31 @@ const Settings = ({ user, onSave }: Props) => {
                 <option value="GBP">British Pound (GBP)</option>
                 <option value="AED">UAE Dirham (AED)</option>
               </select>
+              <span className="settings-field-help">Used for balances, totals, and reports throughout FinTrack.</span>
+            </label>
+
+            <label>
+              <span className="settings-field-label">Daily loss limit</span>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                inputMode="decimal"
+                value={dailyLossLimit}
+                onChange={(event) => setDailyLossLimit(event.target.value)}
+                placeholder="0"
+                aria-label="Daily loss limit"
+              />
+              <span className="settings-field-help">Show a dashboard warning when today’s net loss reaches this amount. Set to 0 to turn it off.</span>
             </label>
 
           </div>
         </div>
 
-        <div className="chart-panel settings-account-summary">
+        <div className="chart-panel settings-account-summary" id="settings-account-summary">
           <div className="chart-panel-header">
             <div>
-              <h3>Account summary</h3>
+              <h3><span className="settings-heading-icon balance"><Wallet size={17} /></span>Balance overview</h3>
               <p>Quick snapshot of the current account. Update balance as needed.</p>
             </div>
           </div>
@@ -439,9 +539,10 @@ const Settings = ({ user, onSave }: Props) => {
             <div className="snapshot-item">
               <span>Current balance</span>
               {isEditingBalance ? (
-                <div style={{ display: "flex", gap: 8, alignItems: "center", width: "100%" }}>
-                  <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{currency}</span>
+                <div className="settings-balance-editor">
+                  <label htmlFor="settings-current-balance">{currency}</label>
                   <input
+                    id="settings-current-balance"
                     type="number"
                     min="0"
                     step="0.01"
@@ -449,47 +550,23 @@ const Settings = ({ user, onSave }: Props) => {
                     onChange={(event) => setCurrentBalanceInput(event.target.value)}
                     autoFocus
                     placeholder="0.00"
-                    style={{
-                      flex: 1,
-                      padding: "8px 12px",
-                      border: "1px solid var(--color-border)",
-                      borderRadius: 6,
-                      backgroundColor: "var(--color-background-secondary)",
-                      color: "var(--color-text-primary)",
-                      fontSize: 16,
-                      fontWeight: 600,
-                    }}
                   />
                   <button
                     type="button"
                     onClick={() => setIsEditingBalance(false)}
-                    style={{
-                      padding: "6px 8px",
-                      background: "none",
-                      border: "none",
-                      cursor: "pointer",
-                      color: "var(--color-text-secondary)",
-                    }}
+                    className="settings-icon-button"
                     title="Done editing"
                   >
                     <Check size={18} />
                   </button>
                 </div>
               ) : (
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <strong style={{ fontSize: 18 }}>{formatCurrency(Number(currentBalanceInput), currency)}</strong>
+                <div className="settings-balance-value">
+                  <strong>{formatCurrency(Number(currentBalanceInput), currency)}</strong>
                   <button
                     type="button"
                     onClick={() => setIsEditingBalance(true)}
-                    style={{
-                      padding: "6px 8px",
-                      background: "none",
-                      border: "none",
-                      cursor: "pointer",
-                      color: "var(--color-text-secondary)",
-                      display: "flex",
-                      alignItems: "center",
-                    }}
+                    className="settings-icon-button"
                     title="Edit current balance"
                   >
                     <Pencil size={16} />
@@ -504,12 +581,12 @@ const Settings = ({ user, onSave }: Props) => {
             </div>
 
             {/* Investment Included Toggle */}
-            <div className="snapshot-item" style={{ alignItems: "center" }}>
-              <div style={{ flex: 1 }}>
-                <span style={{ display: "block", fontWeight: 600, color: "#e2e8f0", marginBottom: 2 }}>
-                  Amount Investment Included
+            <div className="snapshot-item settings-investment-option">
+              <div>
+                <span className="settings-investment-title">
+                  Include investments in balance
                 </span>
-                <span style={{ fontSize: 12, color: "#64748b" }}>
+                <span className="settings-investment-description">
                   {investmentIncluded
                     ? "Current balance = Trading balance + Investment total"
                     : "Current balance = Trading balance only"}
@@ -519,37 +596,13 @@ const Settings = ({ user, onSave }: Props) => {
               <button
                 type="button"
                 onClick={() => setInvestmentIncluded(v => !v)}
-                style={{
-                  position: "relative",
-                  width: 48,
-                  height: 26,
-                  borderRadius: 13,
-                  border: "none",
-                  background: investmentIncluded
-                    ? "linear-gradient(135deg, #3b82f6, #2563eb)"
-                    : "rgba(51,65,85,0.8)",
-                  cursor: "pointer",
-                  transition: "background 0.3s ease",
-                  flexShrink: 0,
-                  boxShadow: investmentIncluded
-                    ? "0 0 12px rgba(59,130,246,0.5)"
-                    : "none",
-                }}
+                className={`settings-switch ${investmentIncluded ? "enabled" : ""}`}
                 aria-checked={investmentIncluded}
                 role="switch"
+                aria-label="Include investments in the balance calculation"
                 title="Toggle investment in balance"
               >
-                <span style={{
-                  position: "absolute",
-                  top: 3,
-                  left: investmentIncluded ? 25 : 3,
-                  width: 20,
-                  height: 20,
-                  borderRadius: "50%",
-                  background: "#ffffff",
-                  transition: "left 0.3s ease",
-                  boxShadow: "0 1px 4px rgba(0,0,0,0.3)",
-                }} />
+                <span />
               </button>
             </div>
           </div>
@@ -557,7 +610,7 @@ const Settings = ({ user, onSave }: Props) => {
         </div>
       </div>
 
-      <section className="chart-panel balance-password-panel">
+      <section className="chart-panel balance-password-panel" id="settings-balance-security">
         <div className="chart-panel-header">
           <div>
             <h3><KeyRound size={17} /> Starting balance PIN</h3>
@@ -628,7 +681,7 @@ const Settings = ({ user, onSave }: Props) => {
         {passwordStatus && <div className={passwordStatus.includes("saved") || passwordStatus.includes("reset successfully") || passwordStatus.includes("unlocked") ? "field-hint" : "error-message"} role="status">{passwordStatus}</div>}
       </section>
 
-      <section className="chart-panel default-cost-panel">
+      <section className="chart-panel default-cost-panel" id="settings-cost-schedules">
         <div className="chart-panel-header">
           <div>
             <h3 className="cost-section-title"><span className="cost-section-icon"><Database size={19} /></span>Default Cost Amount</h3>
@@ -741,6 +794,28 @@ const Settings = ({ user, onSave }: Props) => {
             <div className="empty-schedule">No dated costs yet. Create your first schedule above.</div>
           )}
         </div>
+      </section>
+
+      <section className="chart-panel application-data-panel" id="settings-data-backup">
+        <div className="chart-panel-header">
+          <div>
+            <h3><span className="settings-heading-icon balance"><Database size={17} /></span>Application data</h3>
+            <p>Back up or restore all FinTrack accounts, records, settings, and saved views.</p>
+          </div>
+        </div>
+        <div className="application-data-actions">
+          <article>
+            <div><strong>Export full backup</strong><p>Download a versioned JSON file with every account and all saved FinTrack data.</p></div>
+            <button type="button" className="secondary-button" onClick={handleExportApplicationData}><Download size={16} /> Export backup</button>
+          </article>
+          <article>
+            <div><strong>Import full backup</strong><p>Validate a FinTrack backup and restore it to this browser.</p></div>
+            <input ref={backupInputRef} className="application-backup-file" type="file" accept=".json,application/json" aria-label="Choose a FinTrack JSON backup" onChange={(event) => void handleImportApplicationData(event.target.files?.[0])} />
+            <button type="button" className="primary-button" onClick={() => backupInputRef.current?.click()}><Upload size={16} /> Choose backup</button>
+          </article>
+        </div>
+        <p className="application-backup-notice"><ShieldCheck size={15} /> Backup files include account credentials and PIN verification data as well as financial records. Store the file somewhere private.</p>
+        {backupStatus && <div className={backupStatus.includes("downloaded") ? "field-hint" : "error-message"} role="status">{backupStatus}</div>}
       </section>
 
       <div className="settings-save-bar">
