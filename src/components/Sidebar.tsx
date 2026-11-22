@@ -17,14 +17,16 @@ import {
   Activity,
   ChartCandlestick,
   BellRing,
+  PieChart,
+  SlidersHorizontal,
 } from "lucide-react";
 import type { UserAccount } from "../types/finance";
 
 interface SidebarProps {
   user: UserAccount;
-  activePage: "dashboard" | "transactions" | "trade-signal" | "analytics" | "profitloss" | "reports" | "withdrawals" | "income" | "settings" | "chat" | "ai-analysis" | "investment" | "expenses" | "profile" | "scenario-lab";
+  activePage: "dashboard" | "transactions" | "trade-signal" | "analytics" | "profitloss" | "reports" | "weekly-analysis" | "notifications" | "withdrawals" | "income" | "settings" | "chat" | "ai-analysis" | "investment" | "expenses" | "profile" | "scenario-lab" | "diversification-analysis" | "rebalance-planner";
   onPageChange: (
-    page: "dashboard" | "transactions" | "trade-signal" | "analytics" | "profitloss" | "reports" | "withdrawals" | "income" | "settings" | "chat" | "ai-analysis" | "investment" | "expenses" | "profile" | "scenario-lab"
+    page: "dashboard" | "transactions" | "trade-signal" | "analytics" | "profitloss" | "reports" | "weekly-analysis" | "notifications" | "withdrawals" | "income" | "settings" | "chat" | "ai-analysis" | "investment" | "expenses" | "profile" | "scenario-lab" | "diversification-analysis" | "rebalance-planner"
   ) => void;
   notificationsOpen: boolean;
   unreadNotificationCount: number;
@@ -179,6 +181,11 @@ const Sidebar = ({
           <span className="nav-label">Reports</span>
         </button>
 
+        <button className={activePage === "weekly-analysis" ? "nav-button active" : "nav-button"}
+          onClick={() => onPageChange("weekly-analysis")} aria-label="Weekly Analysis" title={collapsed ? "Weekly Analysis" : undefined}>
+          <Activity size={18} /><span className="nav-label">Weekly Analysis</span>
+        </button>
+
         <button
           className={
             activePage === "investment"
@@ -191,6 +198,16 @@ const Sidebar = ({
         >
           <PiggyBank size={18} />
           <span className="nav-label">Investment</span>
+        </button>
+
+        <button className={activePage === "diversification-analysis" ? "nav-button active" : "nav-button"}
+          onClick={() => onPageChange("diversification-analysis")} aria-label="Diversification Analysis" title={collapsed ? "Diversification Analysis" : undefined}>
+          <PieChart size={18} /><span className="nav-label">Diversification Analysis</span>
+        </button>
+
+        <button className={activePage === "rebalance-planner" ? "nav-button active" : "nav-button"}
+          onClick={() => onPageChange("rebalance-planner")} aria-label="Rebalancing Planner" title={collapsed ? "Rebalancing Planner" : undefined}>
+          <SlidersHorizontal size={18} /><span className="nav-label">Rebalancing Planner</span>
         </button>
 
         <button
@@ -219,7 +236,7 @@ const Sidebar = ({
         </button>
 
         <button className={notificationsOpen ? "nav-button active" : "nav-button"}
-          onClick={onOpenNotifications} aria-label={unreadNotificationCount ? `Notifications, ${unreadNotificationCount} unread` : "Notifications"} aria-expanded={notificationsOpen} title={collapsed ? `Notifications${unreadNotificationCount ? ` (${unreadNotificationCount} unread)` : ""}` : undefined}>
+          onClick={onOpenNotifications} aria-label={unreadNotificationCount ? `Notifications, ${unreadNotificationCount} unread` : "Notifications"} aria-current={notificationsOpen ? "page" : undefined} title={collapsed ? `Notifications${unreadNotificationCount ? ` (${unreadNotificationCount} unread)` : ""}` : undefined}>
           <BellRing size={18} /><span className="nav-label">Notifications</span>
           {unreadNotificationCount > 0 && <span className="nav-notification-badge" aria-hidden="true">{unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}</span>}
         </button>

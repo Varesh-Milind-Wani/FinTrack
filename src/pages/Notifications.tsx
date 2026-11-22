@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, BellRing, TrendingUp, X } from "lucide-react";
+import { AlertTriangle, BellRing, TrendingUp, CalendarDays, Clock3 } from "lucide-react";
 
 import type { UserAccount } from "../types/finance";
 import { getWeekdayNotificationHistory, type WeekdayNotificationRecord } from "../utils/weekdayNotifications";
@@ -31,7 +31,7 @@ const getSimpleReminder = (item: WeekdayNotificationRecord) => {
   return `Your ${item.dayName} history shows no clear weekday edge.\nFOCUS: Judge the setup on its merits, not the day of the week.\nRISK: Follow your usual plan and limits.`;
 };
 
-const Notifications = ({ user, onClose }: { user: UserAccount; onClose: () => void }) => {
+const Notifications = ({ user }: { user: UserAccount }) => {
   const [history, setHistory] = useState<WeekdayNotificationRecord[]>(() => getWeekdayNotificationHistory(user.id));
   const [visibleCount, setVisibleCount] = useState(NOTIFICATIONS_PER_BATCH);
   const orderedHistory = useMemo(
@@ -51,56 +51,42 @@ const Notifications = ({ user, onClose }: { user: UserAccount; onClose: () => vo
     };
   }, [user.id]);
 
-  useEffect(() => {
-    const previousOverflow = document.body.style.overflow;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    document.body.style.overflow = "hidden";
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [onClose]);
-
   return (
-    <div className="weekday-notifications-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section className="weekday-notifications-drawer" role="dialog" aria-modal="true" aria-labelledby="weekday-notifications-title">
-        <div className="page-content weekday-notifications-page">
+    <div className="page-content weekday-notifications-page">
           <header className="weekday-notifications-heading">
-            <div>
-              <span className="eyebrow">SAVED REMINDERS</span>
-              <h1 id="weekday-notifications-title">Notifications</h1>
-            </div>
-            <span className="weekday-notifications-count" aria-label={`${history.length} saved notifications`}>
-              {history.length} {history.length === 1 ? "notification" : "notifications"}
-            </span>
-            <button type="button" className="weekday-notifications-close" onClick={onClose} aria-label="Close notifications"><X size={19} /></button>
+            <div><span className="eyebrow">ACTIVITY CENTER</span><h1 id="weekday-notifications-title">Notifications</h1><p>Saved trading reminders, reflections, and prompts.</p></div>
+            <div className="weekday-notifications-count"><BellRing size={15} /><span>{history.length} {history.length === 1 ? "notification" : "notifications"}</span></div>
           </header>
 
           <section className="weekday-notification-log" aria-label="Notification history">
+            <header className="weekday-notification-log-header">
+              <div><h2>Recent reminders</h2><p>Newest notifications appear first.</p></div>
+              <span><CalendarDays size={14} /> {history.length} saved</span>
+            </header>
             {visibleHistory.length ? <div className="weekday-notification-log-list">{visibleHistory.map((item) => {
               const reminderDate = new Date(`${item.performedDate ?? item.forDate.slice(0, 10)}T00:00:00`);
               const createdAt = new Date(item.createdAt);
               const statusLabel = item.status === "positive" ? "Strong finish" : item.status === "loss" ? "Reset and review" : item.status === "flat" ? "Patient session" : item.status === "no-trades" ? "Discipline is progress" : item.status === "caution" ? "Selective game plan" : item.status === "strong" ? "Build on your process" : item.status === "weekend" ? "Weekend note" : item.status === "insufficient" ? "Build your process" : "Plan the trade";
               const performanceDay = item.performedDate ? new Intl.DateTimeFormat(undefined, { weekday: "long" }).format(reminderDate) : item.dayName;
               const historicalDayStatus = item.status === "caution" || item.status === "loss";
+              const reminderLines = getSimpleReminder(item).split("\n");
               return <article className={`weekday-notification-log-item ${item.status}`} key={item.id}>
                 <div className="weekday-notification-log-icon">{historicalDayStatus ? <AlertTriangle size={17} /> : item.status === "strong" || item.status === "positive" ? <TrendingUp size={17} /> : <BellRing size={17} />}</div>
                 <div className="weekday-notification-log-copy">
-                  <div><strong>{statusLabel} · {performanceDay}</strong></div>
-                  <p>{getSimpleReminder(item)}</p>
+                  <div className="weekday-notification-log-title"><strong>{statusLabel} · {performanceDay}</strong><time dateTime={item.createdAt}><Clock3 size={12} />{Number.isNaN(createdAt.getTime()) ? "" : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(createdAt)}</time></div>
+                  <div className="weekday-notification-log-message">{reminderLines.map((line, index) => {
+                    const separator = line.indexOf(":");
+                    const label = separator > 0 ? line.slice(0, separator) : "";
+                    const detail = separator > 0 ? line.slice(separator + 1).trim() : line;
+                    return <p key={`${item.id}-${index}`}>{label && <span>{label}</span>}{detail}</p>;
+                  })}</div>
                 </div>
-                <time dateTime={item.createdAt}>{Number.isNaN(createdAt.getTime()) ? "" : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(createdAt)}</time>
               </article>;
             })}</div> : <div className="weekday-notification-log-empty"><BellRing size={18} /><span>No notifications saved yet. Your first weekday reminder will appear here.</span></div>}
             {visibleCount < history.length && <footer className="weekday-notification-history-footer">
               <button type="button" className="secondary-button" onClick={() => setVisibleCount((count) => count + NOTIFICATIONS_PER_BATCH)}>Load {Math.min(NOTIFICATIONS_PER_BATCH, history.length - visibleCount)} more</button>
             </footer>}
           </section>
-        </div>
-      </section>
     </div>
   );
 };

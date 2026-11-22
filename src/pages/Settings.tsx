@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 
 import type { DefaultCostSchedule, UserAccount } from "../types/finance";
-import { formatCurrency } from "../utils/money";
+import { formatCurrency, getCurrencyRateDate } from "../utils/money";
 import { calculateCurrentBalance, getAuthoritativeBalance } from "../utils/balance";
 import { createBalancePinSalt, hashBalancePin, verifyBalancePin } from "../utils/balancePin";
 import { usePersistentState } from "../hooks/usePersistentState";
@@ -67,6 +67,11 @@ const Settings = ({ user, onSave }: Props) => {
   const [currency, setCurrency] = useState(
     user.currency ?? "INR"
   );
+  const supportedDisplayCurrencies = ["INR", "USD", "GBP", "CAD", "JPY"];
+  const [displayCurrency, setDisplayCurrency] = useState(() => {
+    const saved = user.displayCurrency ?? user.currency ?? "INR";
+    return supportedDisplayCurrencies.includes(saved) ? saved : "INR";
+  });
   const [dailyLossLimit, setDailyLossLimit] = useState(String(user.dailyLossLimit ?? 0));
   const [investmentIncluded, setInvestmentIncluded] = useState(
     user.investmentIncluded ?? false
@@ -102,6 +107,11 @@ const Settings = ({ user, onSave }: Props) => {
     user.currentBalance,
     currentBalance,
   ]);
+
+  useEffect(() => {
+    const saved = user.displayCurrency ?? user.currency ?? "INR";
+    setDisplayCurrency(supportedDisplayCurrencies.includes(saved) ? saved : "INR");
+  }, [user.id, user.displayCurrency, user.currency]);
 
   const handleSave = () => {
     const nextBalance = Number(startingBalance);
@@ -143,6 +153,7 @@ const Settings = ({ user, onSave }: Props) => {
       // preserve it instead of resetting the balance back to the raw total.
       balanceAdjustment: nextCurrentBalance - balanceBeforeManualAdjustment,
       currency,
+      displayCurrency,
       dailyLossLimit: nextDailyLossLimit,
       investmentIncluded,
       defaultCostAmount: user.defaultCostAmount ?? 0,
@@ -511,16 +522,21 @@ const Settings = ({ user, onSave }: Props) => {
               <span className="settings-field-label">Display currency</span>
 
               <select
-                value={currency}
-                onChange={(event) => setCurrency(event.target.value)}
+                value={displayCurrency}
+                onChange={(event) => {
+                  const nextCurrency = event.target.value;
+                  setDisplayCurrency(nextCurrency);
+                  onSave({ ...user, displayCurrency: nextCurrency });
+                  setStatus(`Display currency updated to ${nextCurrency}.`);
+                }}
               >
                 <option value="INR">Indian Rupee (INR)</option>
                 <option value="USD">US Dollar (USD)</option>
-                <option value="EUR">Euro (EUR)</option>
                 <option value="GBP">British Pound (GBP)</option>
-                <option value="AED">UAE Dirham (AED)</option>
+                <option value="CAD">Canadian Dollar (CAD)</option>
+                <option value="JPY">Japanese Yen (JPY)</option>
               </select>
-              <span className="settings-field-help">Used for balances, totals, and reports throughout FinTrack.</span>
+              <span className="settings-field-help">All displayed totals are converted from your account currency. {getCurrencyRateDate() ? `Latest available daily reference rate: ${getCurrencyRateDate()}.` : "Exchange rates are loading; amounts remain in account currency until rates are available."} Amounts you enter stay in {currency}.</span>
             </label>
 
             <label>

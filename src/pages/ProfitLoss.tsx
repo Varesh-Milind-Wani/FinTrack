@@ -9,7 +9,7 @@ import {
   X,
 } from "lucide-react";
 import type { Transaction, UserAccount } from "../types/finance";
-import { formatCurrency } from "../utils/money";
+import { formatCurrency, getCurrencyRateDate } from "../utils/money";
 import { calculateBalanceStats } from "../utils/balance";
 import { usePersistentState } from "../hooks/usePersistentState";
 
@@ -53,6 +53,7 @@ const generateCalendarDays = (
   transactionsByDate: Map<string, DailyTransactionGroup>,
   largestProfit: number,
   largestLoss: number,
+  currency: string,
 ) => {
   const year = month.getFullYear();
   const monthIndex = month.getMonth();
@@ -91,16 +92,16 @@ const generateCalendarDays = (
         dayType = 'profit';
         amount = netAmount;
         intensity = largestProfit ? Math.max(1, Math.ceil((netAmount / largestProfit) * 4)) : 1;
-        tooltip = `${tooltip}\nProfit: ₹${dayData.profit.toLocaleString()}\nLoss: ₹${dayData.loss.toLocaleString()}\nNet: +₹${netAmount.toLocaleString()}`;
+        tooltip = `${tooltip}\nProfit: ${formatCurrency(dayData.profit, currency)}\nLoss: ${formatCurrency(dayData.loss, currency)}\nNet: +${formatCurrency(netAmount, currency)}`;
       } else if (netAmount < 0) {
         dayType = 'loss';
         amount = Math.abs(netAmount);
         intensity = largestLoss ? Math.max(1, Math.ceil((Math.abs(netAmount) / largestLoss) * 4)) : 1;
-        tooltip = `${tooltip}\nProfit: ₹${dayData.profit.toLocaleString()}\nLoss: ₹${dayData.loss.toLocaleString()}\nNet: -₹${Math.abs(netAmount).toLocaleString()}`;
+        tooltip = `${tooltip}\nProfit: ${formatCurrency(dayData.profit, currency)}\nLoss: ${formatCurrency(dayData.loss, currency)}\nNet: −${formatCurrency(Math.abs(netAmount), currency)}`;
       } else if (dayData.profit > 0 || dayData.loss > 0) {
         dayType = 'neutral';
         amount = dayData.profit + dayData.loss; // Show total volume for breakeven days
-        tooltip = `${tooltip}\nProfit: ₹${dayData.profit.toLocaleString()}\nLoss: ₹${dayData.loss.toLocaleString()}\nNet: ₹0 (Breakeven)`;
+        tooltip = `${tooltip}\nProfit: ${formatCurrency(dayData.profit, currency)}\nLoss: ${formatCurrency(dayData.loss, currency)}\nNet: ${formatCurrency(0, currency)} (Breakeven)`;
       }
     }
     
@@ -206,10 +207,10 @@ const ProfitLoss = ({ user }: Props) => {
         currentMonth: month,
         monthNet,
         monthTransactionCount,
-        days: generateCalendarDays(month, transactionsByDate, largestProfit, largestLoss),
+        days: generateCalendarDays(month, transactionsByDate, largestProfit, largestLoss, user.currency),
       };
     });
-  }, [calendarMonths, filteredTransactions]);
+  }, [calendarMonths, filteredTransactions, user.currency, user.displayCurrency, getCurrencyRateDate()]);
 
   const stats = useMemo(() => {
     const balanceStats = calculateBalanceStats({ ...user, transactions: filteredTransactions });
@@ -379,7 +380,7 @@ const ProfitLoss = ({ user }: Props) => {
                           onClick={() => setSelectedDay({ dateKey: day.dateKey, transactions: day.transactions })}
                         >
                           <span className="day-number">{day.day}</span>
-                          {day.amount && <span className="day-amount">₹{Math.floor(day.amount)}</span>}
+                          {day.amount && <span className="day-amount">{formatCurrency(day.amount, user.currency)}</span>}
                         </button>
                       ) : (
                         <div key={index} className="calendar-day-cell invisible"></div>

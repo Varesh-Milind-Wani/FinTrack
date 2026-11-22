@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
-import { Plus, Pencil, ReceiptText, Trash2, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Plus, ReceiptText, X } from "lucide-react";
 import type { Expense, UserAccount } from "../types/finance";
 import { formatCurrency } from "../utils/money";
-import { usePersistentState } from "../hooks/usePersistentState";
 import { useAppDialog } from "../components/AppDialog";
+import PersonalCashFlowTable from "../components/PersonalCashFlowTable";
+import ExpenseMonthChartDialog from "../components/ExpenseMonthChartDialog";
 
 interface Props {
   user: UserAccount;
@@ -12,10 +13,66 @@ interface Props {
 
 const categories = ["Food", "Transport", "Shopping", "Bills", "Health", "Entertainment", "Other"];
 const EMPTY_EXPENSES: Expense[] = [];
-const blank = (): Omit<Expense, "id"> => ({
-  name: "", category: "Food", amount: 0,
+const monthKeyFor = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+type ExpenseForm = Omit<Expense, "id" | "amount" | "categories"> & { amount: number; categories: string[] };
+const expenseCategories = (expense: Expense) => expense.categories?.length ? expense.categories : [expense.category];
+const blank = (): ExpenseForm => ({
+  name: "", category: "Food", categories: ["Food"], amount: 0,
   date: new Date().toISOString().slice(0, 10), note: "",
 });
+
+const evaluateAmountExpression = (expression: string): { value: number | null; error: string | null } => {
+  const source = expression.replace(/[×x]/g, "*").replace(/÷/g, "/").replace(/\s+/g, "");
+  if (!source) return { value: null, error: "Enter an amount or calculation." };
+  if (source.length > 120) return { value: null, error: "Calculation is too long." };
+  const tokens = source.match(/(?:\d+(?:\.\d*)?|\.\d+)|[()+\-*/]/g) ?? [];
+  if (tokens.join("") !== source) return { value: null, error: "Use numbers, +, −, ×, ÷, and parentheses only." };
+  let position = 0;
+  function sum(): number {
+    let value = product();
+    while (tokens[position] === "+" || tokens[position] === "-") {
+      const operator = tokens[position++];
+      const right = product();
+      value = operator === "+" ? value + right : value - right;
+      if (!Number.isFinite(value)) throw new Error("Amount is outside the supported range.");
+    }
+    return value;
+  }
+  function product(): number {
+    let value = unary();
+    while (tokens[position] === "*" || tokens[position] === "/") {
+      const operator = tokens[position++];
+      const right = unary();
+      if (operator === "/" && right === 0) throw new Error("Cannot divide by zero.");
+      value = operator === "*" ? value * right : value / right;
+      if (!Number.isFinite(value)) throw new Error("Amount is outside the supported range.");
+    }
+    return value;
+  }
+  function unary(): number {
+    if (tokens[position] === "+" || tokens[position] === "-") {
+      const negative = tokens[position++] === "-";
+      const value = unary();
+      return negative ? -value : value;
+    }
+    const token = tokens[position++];
+    if (token === "(") {
+      const value = sum();
+      if (tokens[position++] !== ")") throw new Error("Close the parentheses.");
+      return value;
+    }
+    if (token == null || !/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(token)) throw new Error("Complete the calculation.");
+    return Number(token);
+  }
+  try {
+    const value = sum();
+    return position === tokens.length
+      ? { value, error: null }
+      : { value: null, error: "Check the calculation format." };
+  } catch (error) {
+    return { value: null, error: error instanceof Error ? error.message : "Check the calculation." };
+  }
+};
 
 const Expenses = ({ user, onSave }: Props) => {
   const { confirm } = useAppDialog();
@@ -23,34 +80,47 @@ const Expenses = ({ user, onSave }: Props) => {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Expense | null>(null);
   const [form, setForm] = useState(blank());
-  const [category, setCategory] = usePersistentState("expenses.category", "all");
-
-  const visible = useMemo(() =>
-    category === "all" ? expenses : expenses.filter((expense) => expense.category === category),
-    [category, expenses]
-  );
-  const { total, thisMonth } = useMemo(() => {
+  const [amountExpression, setAmountExpression] = useState("");
+  const [currentMonthKey, setCurrentMonthKey] = useState(() => monthKeyFor(new Date()));
+  const [expenseChartOpen, setExpenseChartOpen] = useState(false);
+  useEffect(() => {
     const now = new Date();
+    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 2);
+    const timer = window.setTimeout(() => setCurrentMonthKey(monthKeyFor(new Date())), Math.max(1000, nextMonth.getTime() - now.getTime()));
+    return () => window.clearTimeout(timer);
+  }, [currentMonthKey]);
+  const { total, thisMonth } = useMemo(() => {
     return expenses.reduce((totals, expense) => {
       totals.total += expense.amount;
-      const date = new Date(expense.date);
-      if (date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear()) totals.thisMonth += expense.amount;
+      if (expense.date.slice(0, 7) === currentMonthKey) totals.thisMonth += expense.amount;
       return totals;
     }, { total: 0, thisMonth: 0 });
-  }, [expenses]);
+  }, [expenses, currentMonthKey]);
   const fmt = (value: number) => formatCurrency(value, user.currency);
-
-  const openAdd = () => { setEditing(null); setForm(blank()); setModalOpen(true); };
+  const currentMonthIncome = (user.incomes ?? []).reduce((sum, income) => income.date.slice(0, 7) === currentMonthKey ? sum + income.amount : sum, 0);
+  const cashLeft = currentMonthIncome - thisMonth;
+  const amountCalculation = useMemo(() => evaluateAmountExpression(amountExpression), [amountExpression]);
+  const openAdd = () => { setEditing(null); setForm(blank()); setAmountExpression(""); setModalOpen(true); };
   const openEdit = (expense: Expense) => {
     setEditing(expense);
-    setForm({ ...expense, date: expense.date.slice(0, 10) });
+    const selectedCategories = expenseCategories(expense);
+    setForm({ ...expense, categories: selectedCategories, category: selectedCategories[0] ?? expense.category, date: expense.date.slice(0, 10) });
+    setAmountExpression(String(expense.amount));
     setModalOpen(true);
   };
+  const toggleExpenseCategory = (selected: string) => setForm((current) => {
+    const next = current.categories.includes(selected)
+      ? current.categories.filter((item) => item !== selected)
+      : [...current.categories, selected];
+    return { ...current, categories: next, category: next[0] ?? "" };
+  });
   const save = () => {
-    if (!form.name.trim() || !Number.isFinite(form.amount) || form.amount <= 0) return;
+    const amount = amountCalculation.value;
+    if (!form.name.trim() || !form.categories.length || amount == null || !Number.isFinite(amount) || amount <= 0) return;
+    const savedForm = { ...form, category: form.categories[0], categories: [...form.categories], amount };
     const next = editing
-      ? expenses.map((expense) => expense.id === editing.id ? { ...editing, ...form } : expense)
-      : [{ id: crypto.randomUUID(), ...form }, ...expenses];
+      ? expenses.map((expense) => expense.id === editing.id ? { ...editing, ...savedForm } : expense)
+      : [{ id: crypto.randomUUID(), ...savedForm }, ...expenses];
     onSave({ ...user, expenses: next });
     setModalOpen(false);
   };
@@ -63,20 +133,15 @@ const Expenses = ({ user, onSave }: Props) => {
       <div><span className="eyebrow">PERSONAL FINANCE</span><h1>Expense tracker</h1><p>Keep personal spending separate from trades and investments.</p></div>
       <button className="primary-button" onClick={openAdd}><Plus size={16} /> Add expense</button>
     </div>
-    <div className="stats-grid-three" style={{ marginBottom: 24 }}>
+    <div className="stats-grid-three expense-summary-grid" style={{ marginBottom: 24 }}>
       <div className="stat-card"><div className="stat-card-top"><div className="stat-icon loss"><ReceiptText size={19} /></div><span>Total expenses</span></div><div className="stat-value negative">{fmt(total)}</div><div className="stat-trend neutral">All recorded spending</div></div>
-      <div className="stat-card"><div className="stat-card-top"><div className="stat-icon cost"><ReceiptText size={19} /></div><span>This month</span></div><div className="stat-value cost">{fmt(thisMonth)}</div><div className="stat-trend neutral">Current month spending</div></div>
+      <button type="button" className="stat-card stat-card-action" onClick={() => setExpenseChartOpen(true)} aria-label={`View ${new Date(`${currentMonthKey}-01T12:00:00`).toLocaleDateString("en-IN", { month: "long", year: "numeric" })} spending chart`}><div className="stat-card-top"><div className="stat-icon cost"><ReceiptText size={19} /></div><span>This month</span></div><div className="stat-value cost">{fmt(thisMonth)}</div><div className="stat-trend neutral">Current month spending · Click to view</div></button>
       <div className="stat-card"><div className="stat-card-top"><div className="stat-icon blue"><ReceiptText size={19} /></div><span>Records</span></div><div className="stat-value">{expenses.length}</div><div className="stat-trend neutral">Expense entries saved</div></div>
+      <div className={`stat-card cash-left-summary-card ${cashLeft < 0 ? "is-negative" : ""}`}><div className="stat-card-top"><div className="stat-icon profit"><ReceiptText size={19} /></div><span>Cash left this month</span></div><div className={`stat-value ${cashLeft < 0 ? "negative" : "positive"}`}>{fmt(cashLeft)}</div><div className="stat-trend neutral">Recorded income minus expenses</div></div>
     </div>
-    <div className="expense-toolbar">
-      <span>Category</span>
-      <select value={category} onChange={(event) => setCategory(event.target.value)} className="period-selector"><option value="all">All categories</option>{categories.map((item) => <option key={item}>{item}</option>)}</select>
-      <span className="expense-summary">{visible.length} shown · {fmt(visible.reduce((sum, expense) => sum + expense.amount, 0))}</span>
-    </div>
-    <div className="enterprise-table-container"><table className="enterprise-table"><thead><tr><th>EXPENSE</th><th>CATEGORY</th><th>DATE</th><th>AMOUNT</th><th>NOTE</th><th>ACTIONS</th></tr></thead><tbody>
-      {visible.length ? visible.map((expense) => <tr key={expense.id}><td style={{ fontWeight: 700 }}>{expense.name}</td><td><span className="expense-category">{expense.category}</span></td><td>{new Date(expense.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td><td className="negative" style={{ fontWeight: 800 }}>−{fmt(expense.amount)}</td><td>{expense.note || "—"}</td><td><div className="expense-actions"><button className="action-button" onClick={() => openEdit(expense)}><Pencil size={14} /></button><button className="action-button delete" onClick={() => remove(expense.id)}><Trash2 size={14} /></button></div></td></tr>) : <tr><td colSpan={6} className="expense-empty"><ReceiptText size={32} /><p>No expenses recorded yet. Add an expense to begin tracking.</p></td></tr>}
-    </tbody></table></div>
-    {modalOpen && <div className="modal-overlay" onMouseDown={(event) => event.target === event.currentTarget && setModalOpen(false)}><div className="transaction-modal expense-modal"><div className="modal-header"><div><span className="eyebrow">{editing ? "EDIT EXPENSE" : "NEW EXPENSE"}</span><h2>{editing ? "Edit expense" : "Add expense"}</h2></div><button className="close-button" onClick={() => setModalOpen(false)}><X size={18} /></button></div><div className="modal-body"><div className="form-grid"><label>Expense name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="e.g. Grocery shopping" /></label><label>Category<select value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })}>{categories.map((item) => <option key={item}>{item}</option>)}</select></label><label>Amount<input type="number" min="0" step="0.01" value={form.amount || ""} onChange={(event) => setForm({ ...form, amount: Number(event.target.value) })} /></label><label>Date<input type="date" value={form.date} onChange={(event) => setForm({ ...form, date: event.target.value })} /></label></div><label className="expense-note">Note<textarea value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} placeholder="Optional details" /></label></div><div className="modal-footer"><button className="secondary-button" onClick={() => setModalOpen(false)}>Cancel</button><button className="primary-button" onClick={save}>Save expense</button></div></div></div>}
+    <PersonalCashFlowTable mode="expense" incomes={user.incomes ?? []} expenses={expenses} currency={user.currency} onEditExpense={openEdit} onDeleteExpense={(id) => { void remove(id); }} />
+    {expenseChartOpen && <ExpenseMonthChartDialog expenses={expenses} monthKey={currentMonthKey} currency={user.currency} onClose={() => setExpenseChartOpen(false)} />}
+    {modalOpen && <div className="modal-overlay" onMouseDown={(event) => event.target === event.currentTarget && setModalOpen(false)}><div className="transaction-modal expense-modal"><div className="modal-header"><div><span className="eyebrow">{editing ? "EDIT EXPENSE" : "NEW EXPENSE"}</span><h2>{editing ? "Edit expense" : "Add expense"}</h2></div><button className="close-button" onClick={() => setModalOpen(false)} aria-label="Close"><X size={18} /></button></div><div className="modal-body"><div className="form-grid"><label>Expense name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="e.g. Grocery shopping" /></label><fieldset className="expense-category-field"><legend>Categories</legend><div className="expense-category-options">{categories.map((item) => <label key={item}><input type="checkbox" checked={form.categories.includes(item)} onChange={() => toggleExpenseCategory(item)} /><span>{item}</span></label>)}</div><small>Select every category that applies.</small></fieldset><label>Amount ({user.currency})<input type="text" inputMode="decimal" value={amountExpression} onChange={(event) => setAmountExpression(event.target.value)} placeholder="e.g. 56 + 443" aria-describedby="expense-amount-help" /><small id="expense-amount-help" className={amountCalculation.error ? "expense-calculation-error" : "expense-calculation-result"}>{amountCalculation.value == null ? amountCalculation.error : `Calculated amount: ${new Intl.NumberFormat(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(amountCalculation.value)} ${user.currency}`}</small><div className="expense-calculation-keys" aria-label="Calculation operators">{["+", "−", "×", "÷", "(", ")"].map((operator) => <button type="button" key={operator} onClick={() => setAmountExpression((value) => `${value}${operator}`)}>{operator}</button>)}</div></label><label>Date<input type="date" value={form.date} onChange={(event) => setForm({ ...form, date: event.target.value })} /></label></div><label className="expense-note">Note<textarea value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} placeholder="Optional details" /></label><span className="expense-currency-hint">Entered in {user.currency}; amounts are displayed in your selected currency.</span></div><div className="modal-footer"><button className="secondary-button" onClick={() => setModalOpen(false)}>Cancel</button><button className="primary-button" onClick={save} disabled={!form.name.trim() || !form.categories.length || amountCalculation.value == null || amountCalculation.value <= 0}>Save expense</button></div></div></div>}
   </div>;
 };
 

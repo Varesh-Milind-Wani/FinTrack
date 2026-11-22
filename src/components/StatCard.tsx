@@ -14,6 +14,7 @@ interface StatCardProps {
   valueCaption?: string;
   secondaryLabel?: string;
   secondaryValue?: string;
+  className?: string;
   footerAction?: React.ReactNode;
   headerAction?: React.ReactNode;
   onClick?: () => void;
@@ -30,6 +31,7 @@ const StatCard = ({
   valueCaption,
   secondaryLabel,
   secondaryValue,
+  className,
   footerAction,
   headerAction,
   onClick,
@@ -56,6 +58,7 @@ const StatCard = ({
 
   return (
     <div
+      className={className}
       style={{
         background: "linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-secondary) 100%)",
         border: "1px solid var(--border-subtle)",
@@ -90,6 +93,7 @@ const StatCard = ({
       }}
     >
       <div
+        className="stat-card-heading"
         style={{
           display: "flex",
           alignItems: "center",
@@ -97,7 +101,7 @@ const StatCard = ({
           marginBottom: "var(--spacing-lg)",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, minWidth: 0 }}>
+        <div className="stat-card-title" style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, minWidth: 0 }}>
           <span
             style={{
               fontSize: "10px",
@@ -130,7 +134,7 @@ const StatCard = ({
       </div>
 
       {secondaryLabel && secondaryValue !== undefined ? (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 14, marginBottom: "var(--spacing-md)" }}>
+        <div className="stat-card-secondary-metrics" style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 14, marginBottom: "var(--spacing-md)" }}>
           <div style={{ minWidth: 0 }}>
             <div style={{ marginBottom: 5, color: "var(--text-secondary)", fontSize: 12, fontWeight: 600 }}>{valueCaption ?? title}</div>
             <div

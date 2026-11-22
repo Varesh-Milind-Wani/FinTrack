@@ -23,7 +23,7 @@ const DRAWDOWN_LIMITS = [10, 20, 30] as const;
 type DrawdownLimit = (typeof DRAWDOWN_LIMITS)[number];
 
 type ScenarioResult = {
-  id: "historical" | "recent" | "clustered" | "stationary" | "stress";
+  id: "historical" | "behavior" | "recent" | "clustered" | "stationary" | "stress";
   label: string;
   description: string;
   sourceCount: number;
@@ -101,9 +101,10 @@ const ScenarioLab = ({ user }: { user: UserAccount }) => {
       .map((transaction) => new Date(transaction.date))
       .sort((a, b) => a.getTime() - b.getTime());
     if (!dates.length) return { count: 0, months: 0, rate: 1 };
-    const months = Math.max(1, (dates[dates.length - 1].getFullYear() - dates[0].getFullYear()) * 12
-      + dates[dates.length - 1].getMonth() - dates[0].getMonth() + 1);
-    return { count: dates.length, months, rate: dates.length / months };
+    const recentDates = dates.slice(-50);
+    const months = Math.max(1, (recentDates[recentDates.length - 1].getFullYear() - recentDates[0].getFullYear()) * 12
+      + recentDates[recentDates.length - 1].getMonth() - recentDates[0].getMonth() + 1);
+    return { count: recentDates.length, months, rate: recentDates.length / months };
   }, [user.transactions]);
   const requestedTradeRate = tradeFrequencyInput.trim() ? Number(tradeFrequencyInput) : historyFrequency.rate;
   const tradesPerMonth = Number.isFinite(requestedTradeRate) ? Math.min(100, Math.max(.1, requestedTradeRate)) : historyFrequency.rate;
@@ -131,6 +132,7 @@ const ScenarioLab = ({ user }: { user: UserAccount }) => {
       }
     }
 
+    const behaviorOutcomes = outcomes.slice(-Math.min(50, outcomes.length));
     const recentOutcomes = outcomes.slice(-Math.min(20, outcomes.length));
     const buildScenario = (
       id: ScenarioResult["id"], label: string, description: string, sample: number[], seedOffset: number, blockSize = 1, stationary = false,
@@ -154,6 +156,7 @@ const ScenarioLab = ({ user }: { user: UserAccount }) => {
             const monthTradeTarget = Math.round(tradesPerMonth * month);
             const tradesThisMonth = monthTradeTarget - completedTrades;
             for (let trade = 0; trade < tradesThisMonth; trade += 1) {
+              if (reachedZero) break;
               if (stationary) {
                 if (blockState.remaining === 0 || random() < 1 / blockSize) {
                   blockState.index = Math.floor(random() * sample.length);
@@ -165,14 +168,19 @@ const ScenarioLab = ({ user }: { user: UserAccount }) => {
                 blockState.index = Math.floor(random() * sample.length);
                 blockState.remaining = blockSize;
               }
-              balance += sample[blockState.index % sample.length];
+              balance = Math.max(0, balance + sample[blockState.index % sample.length]);
               if (!stationary) {
                 blockState.index += 1;
                 blockState.remaining -= 1;
               }
               completedTrades += 1;
               peak = Math.max(peak, balance);
-              if (balance <= 0) reachedZero = true;
+              if (balance <= 0) {
+                reachedZero = true;
+                balance = 0;
+                maxDrawdown = 100;
+                break;
+              }
               if (peak > 0) maxDrawdown = Math.max(maxDrawdown, (peak - balance) / peak * 100);
             }
             monthlyBalances[month - 1].push(balance);
@@ -208,6 +216,7 @@ const ScenarioLab = ({ user }: { user: UserAccount }) => {
       pathCount,
       scenarios: [
         buildScenario("historical", "All-history mix", "Draw single results from the full saved history.", outcomes, 101),
+        buildScenario("behavior", "Last 50 trades", `Resample your latest ${behaviorOutcomes.length} outcomes in short blocks to reflect recent results and streaks.`, behaviorOutcomes, 606, Math.min(3, Math.max(1, behaviorOutcomes.length))),
         buildScenario("recent", "Recent-results mix", `Draw single results from the latest ${recentOutcomes.length} trades.`, recentOutcomes, 202),
         buildScenario("clustered", "Three-trade blocks", `Resample consecutive blocks of ${blockSize} saved outcomes to retain short streaks.`, outcomes, 303, blockSize),
         buildScenario("stationary", "Stationary bootstrap", "Use random-length circular blocks averaging three trades to retain serial dependence.", outcomes, 404, 3, true),
@@ -235,11 +244,12 @@ const ScenarioLab = ({ user }: { user: UserAccount }) => {
     const y = (value: number) => pad.top + (max - value) / (max - min) * (height - pad.top - pad.bottom);
     const historicalPoints = historicalScenario.points;
     const upper = makePath(historicalPoints, "p90", x, (value) => y(displayValue(value)));
+    const lower = makePath(historicalPoints, "p10", x, (value) => y(displayValue(value)));
     const lowerReverse = [...historicalPoints].reverse().map((point) => `L${x(point.step).toFixed(1)},${y(displayValue(point.p10)).toFixed(1)}`).join(" ");
     return {
       width, height, pad, min, max, offset,
       medians: simulation.scenarios.map((scenario) => ({ id: scenario.id, path: makePath(scenario.points, "median", x, (value) => y(displayValue(value))) })),
-      band: `${upper} ${lowerReverse} Z`,
+      band: `${upper} ${lowerReverse} Z`, upper, lower,
       ticks: Array.from({ length: 5 }, (_, index) => min + (max - min) * index / 4),
       xTicks: [...new Set([0, Math.round(horizonMonths / 4), Math.round(horizonMonths / 2), Math.round(horizonMonths * .75), horizonMonths])],
       x, y,
@@ -260,17 +270,47 @@ const ScenarioLab = ({ user }: { user: UserAccount }) => {
       : null,
   });
   const historicalStats = getScenarioStats(historicalScenario);
+  const hasVisibleHistoricalRange = historicalScenario.points.some((point) => point.p90 - point.p10 > Math.max(0.01, simulation.startingCapital * 0.001));
+  const behaviorScenario = simulation.scenarios.find((scenario) => scenario.id === "behavior")!;
+  const behaviorStats = getScenarioStats(behaviorScenario);
+  const behaviorSummary = useMemo(() => {
+    const values = user.transactions
+      .filter((transaction) => (transaction.type === "profit" || transaction.type === "loss")
+        && Number.isFinite(Date.parse(transaction.date)) && Date.parse(transaction.date) <= Date.now()
+        && Number.isFinite(transaction.amount) && transaction.amount >= 0)
+      .slice().sort((a, b) => Date.parse(a.date) - Date.parse(b.date))
+      .slice(-50)
+      .map((transaction) => includeCosts ? signedResult(transaction) : grossSignedResult(transaction));
+    const wins = values.filter((value) => value > 0);
+    const losses = values.filter((value) => value < 0);
+    let longestLossStreak = 0;
+    let lossStreak = 0;
+    values.forEach((value) => { lossStreak = value < 0 ? lossStreak + 1 : 0; longestLossStreak = Math.max(longestLossStreak, lossStreak); });
+    const grossWins = wins.reduce((sum, value) => sum + value, 0);
+    const grossLosses = Math.abs(losses.reduce((sum, value) => sum + value, 0));
+    return { count: values.length, winRate: values.length ? wins.length / values.length * 100 : 0,
+      average: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0,
+      averageWin: wins.length ? grossWins / wins.length : 0, averageLoss: losses.length ? grossLosses / losses.length : 0,
+      profitFactor: grossLosses ? grossWins / grossLosses : grossWins ? Infinity : 0, longestLossStreak };
+  }, [user.transactions, includeCosts]);
+  const behaviorInsight = behaviorSummary.count < 5
+    ? "Save at least 5 completed trades to create a useful behavior-based projection."
+    : behaviorSummary.profitFactor < 1
+      ? `Your last ${behaviorSummary.count} trades lost more than they won overall. The simulation keeps recent outcomes and short streaks in view; review trade size and loss limits before relying on the range.`
+      : behaviorSummary.average <= 0
+        ? `Your last ${behaviorSummary.count} trades have not produced a positive average result using the selected cost setting. Costs or loss size may be reducing your results.`
+        : `Your last ${behaviorSummary.count} trades averaged ${money(behaviorSummary.average)} per trade with a ${behaviorSummary.winRate.toFixed(0)}% win rate. The simulated middle balance is ${behaviorStats.median == null ? "not available" : money(behaviorStats.median)} after the selected period. This is a resampling estimate, not a prediction.`;
 
   return (
     <div className="page-content scenario-lab-page">
       <header className="scenario-lab-header">
-        <div className="scenario-lab-title"><span className="eyebrow">RISK RESEARCH · HISTORICAL RESAMPLING</span><h1>Scenario Lab</h1><p>Explore how your recorded trade outcomes could combine across a future sequence.</p></div>
+        <div className="scenario-lab-title"><span className="eyebrow">YOUR TRADE HISTORY · SIMULATED OUTCOMES</span><h1>Scenario Lab</h1><p>See a range of possible balances using your saved trades. This is a historical simulation, not a forecast.</p></div>
         <div className="scenario-lab-controls">
-          <label><span>Projection horizon</span><select value={horizonMonths} onChange={(event) => setHorizonMonths(Number(event.target.value))}>{HORIZONS.map(({ months, label }) => <option key={months} value={months}>{label}</option>)}</select></label>
-          <label className="scenario-lab-frequency"><span>Trades per month</span><input type="text" inputMode="decimal" value={isTradeFrequencyFocused ? tradeFrequencyInput : tradeFrequencyInput || tradesPerMonth.toFixed(1)} onFocus={() => { setIsTradeFrequencyFocused(true); if (!tradeFrequencyInput) setTradeFrequencyInput(tradesPerMonth.toFixed(1)); }} onChange={(event) => setTradeFrequencyInput(event.target.value.replace(/[^\d.]/g, "").replace(/(\..*)\./g, "$1"))} onBlur={() => { const value = Number(tradeFrequencyInput); setTradeFrequencyInput(tradeFrequencyInput && Number.isFinite(value) ? String(Math.min(100, Math.max(.1, value))) : ""); setIsTradeFrequencyFocused(false); }} aria-label="Projected trades per month" aria-describedby="scenario-frequency-help" /><small id="scenario-frequency-help">{tradeFrequencyInput ? "Custom pace" : historyFrequency.count ? `Based on ${historyFrequency.count} trades in ${historyFrequency.months} calendar months` : "Set a pace to run a projection"}</small></label>
+          <label><span>How far ahead?</span><select value={horizonMonths} onChange={(event) => setHorizonMonths(Number(event.target.value))}>{HORIZONS.map(({ months, label }) => <option key={months} value={months}>{label}</option>)}</select></label>
+          <label className="scenario-lab-frequency"><span>Trades each month</span><input type="text" inputMode="decimal" value={isTradeFrequencyFocused ? tradeFrequencyInput : tradeFrequencyInput || tradesPerMonth.toFixed(1)} onFocus={() => { setIsTradeFrequencyFocused(true); if (!tradeFrequencyInput) setTradeFrequencyInput(tradesPerMonth.toFixed(1)); }} onChange={(event) => setTradeFrequencyInput(event.target.value.replace(/[^\d.]/g, "").replace(/(\..*)\./g, "$1"))} onBlur={() => { const value = Number(tradeFrequencyInput); setTradeFrequencyInput(tradeFrequencyInput && Number.isFinite(value) ? String(Math.min(100, Math.max(.1, value))) : ""); setIsTradeFrequencyFocused(false); }} aria-label="Projected trades per month" aria-describedby="scenario-frequency-help" /><small id="scenario-frequency-help">{tradeFrequencyInput ? "Custom trading pace" : historyFrequency.count ? `Your history: ${historyFrequency.count} trades over ${historyFrequency.months} months` : "No trade pace available yet"}</small></label>
           <label><span>Drawdown threshold</span><select value={drawdownLimit} onChange={(event) => setDrawdownLimit(Number(event.target.value) as DrawdownLimit)}>{DRAWDOWN_LIMITS.map((value) => <option key={value} value={value}>{value}% from peak</option>)}</select></label>
-          <div className="scenario-lab-average-rate"><span>Your historical average</span><strong>{historyFrequency.count ? historyFrequency.rate.toFixed(1) : "—"}<small> trades / month</small></strong><small>{historyFrequency.count ? `${historyFrequency.count} trades · ${historyFrequency.months} calendar months` : "No saved trades yet"}</small></div>
-          {tradeFrequencyInput && <button type="button" className="scenario-lab-reset-pace" onClick={() => setTradeFrequencyInput("")}>Use historical pace</button>}
+          <div className="scenario-lab-average-rate"><span>Recent trading pace</span><strong>{historyFrequency.count ? historyFrequency.rate.toFixed(1) : "—"}<small> trades / month</small></strong><small>{historyFrequency.count ? `From the latest ${historyFrequency.count} trades over ${historyFrequency.months} months` : "No saved trades yet"}</small></div>
+          {tradeFrequencyInput && <button type="button" className="scenario-lab-reset-pace" onClick={() => setTradeFrequencyInput("")}>Use recent pace</button>}
         </div>
       </header>
 
@@ -290,29 +330,35 @@ const ScenarioLab = ({ user }: { user: UserAccount }) => {
       {historicalScenario.sourceCount < 5 ? (
         <section className="scenario-lab-empty"><CircleHelp size={21} /><div><h2>More trade history needed</h2><p>Record at least 5 completed profit or loss transactions to build a resampling scenario. More historical trades make the range more informative.</p></div></section>
       ) : <>
-        {historicalScenario.sourceCount < 20 && <div className="scenario-lab-sample-warning"><AlertTriangle size={16} /><span>Early sample: only {historicalScenario.sourceCount} saved outcomes are available. The recent and clustered scenarios use this same small history and may be unstable.</span></div>}
+        {historicalScenario.sourceCount < 20 && <div className="scenario-lab-sample-warning"><AlertTriangle size={16} /><span>Small sample: {historicalScenario.sourceCount} completed trades. Results can change significantly as you record more trades.</span></div>}
+        <section className="scenario-lab-insight" aria-label="Recent trading behavior analysis"><div><span className="eyebrow">RECENT BEHAVIOR · LAST {behaviorSummary.count} TRADES</span><h2>What your recent results show</h2><p>{behaviorInsight}</p></div><div className="scenario-lab-insight-stats"><span>Win rate <b>{behaviorSummary.winRate.toFixed(1)}%</b></span><span>Average win <b>{money(behaviorSummary.averageWin)}</b></span><span>Average loss <b>{money(-behaviorSummary.averageLoss)}</b></span><span>Longest loss streak <b>{behaviorSummary.longestLossStreak} trades</b></span></div><small>Rule-based analysis of your saved outcomes. It does not use an external AI service or predict market prices.</small></section>
+        <section className="scenario-lab-behavior-result"><div><span className="eyebrow">BEHAVIOR SCENARIO</span><h2>If your last {behaviorScenario.sourceCount} trades were a guide</h2><p>{behaviorScenario.description}</p></div><div><small>Middle outcome</small><strong>{behaviorStats.median == null ? "—" : money(behaviorStats.median)}</strong></div><div><small>10% lower outcome</small><strong className="negative">{behaviorStats.p10 == null ? "—" : money(behaviorStats.p10)}</strong></div><div><small>Balance reaches zero</small><strong>{behaviorScenario.ruinProbability.toFixed(1)}%</strong></div></section>
         <section className="scenario-lab-metrics" aria-label="Scenario outcome metrics">
-          <article><span><Activity size={15} /> Typical ending balance</span><strong>{money(historicalStats.median!)}</strong><small>Median · all-history mix</small></article>
+          <article><span><Activity size={15} /> Typical ending balance</span><strong>{money(historicalStats.median!)}</strong><small>Middle result · all saved trades</small></article>
           <article><span><ArrowDownRight size={15} /> Lower outcome range</span><strong className="negative">{money(historicalStats.p10!)}</strong><small>10th percentile · all-history mix</small></article>
           <article><span><ArrowUpRight size={15} /> Upper outcome range</span><strong className="positive">{money(historicalStats.p90!)}</strong><small>90th percentile · all-history mix</small></article>
           <article><span><ShieldAlert size={15} /> Drawdown threshold crossed</span><strong className={historicalScenario.drawdownProbability > 20 ? "negative" : "neutral"}>{historicalScenario.drawdownProbability.toFixed(1)}%</strong><small>{drawdownLimit}% peak-to-trough · all-history mix</small></article>
           <article><span><ArrowDownRight size={15} /> Expected shortfall</span><strong className={historicalStats.worstDecilePnl != null && historicalStats.worstDecilePnl < 0 ? "negative" : "positive"}>{historicalStats.worstDecilePnl == null ? "—" : money(historicalStats.worstDecilePnl)}</strong><small>Average P&amp;L in the worst 10% of paths</small></article>
-          <article><span><ShieldAlert size={15} /> Balance depletion risk</span><strong className={historicalScenario.ruinProbability > 0 ? "negative" : "positive"}>{historicalScenario.ruinProbability.toFixed(1)}%</strong><small>Paths that reached zero or below</small></article>
+          <article><span><ShieldAlert size={15} /> Balance reaches zero</span><strong className={historicalScenario.ruinProbability > 0 ? "negative" : "positive"}>{historicalScenario.ruinProbability.toFixed(1)}%</strong><small>Simulated paths that hit zero; losses stop at zero</small></article>
           <article><span><Activity size={15} /> 90th percentile max drawdown</span><strong className="neutral">{historicalStats.drawdownP90 == null ? "—" : `${historicalStats.drawdownP90.toFixed(1)}%`}</strong><small>Peak-to-trough across simulated paths</small></article>
         </section>
 
         <section className="scenario-lab-chart-card">
-          <header><div><span className="eyebrow">SIMULATED EQUITY RANGE</span><h2>Compare possible balance paths</h2><p>All-history range is shaded; each line shows a scenario median.</p></div><span className="scenario-lab-chart-legend"><i /> All-history 10th–90th <b className="historical" /> All-history <b className="recent" /> Recent <b className="clustered" /> Fixed blocks <b className="stationary" /> Stationary <b className="stress" /> Stress</span></header>
+          <header><div><span className="eyebrow">SIMULATED EQUITY RANGE</span><h2>Compare possible balance paths</h2><p>The shaded area shows the all-history range; lines show the middle result for each scenario.</p></div><span className="scenario-lab-chart-legend"><i /> All-history range <b className="historical" /> All history <b className="behavior" /> Last 50 <b className="recent" /> Last 20 <b className="clustered" /> 3-trade blocks <b className="stationary" /> Variable blocks <b className="stress" /> Stress</span></header>
           <div className="scenario-lab-chart-wrap">
             <div className="scenario-lab-chart-tools"><div className="scenario-lab-chart-mode" role="group" aria-label="Chart values"><button type="button" className={chartMode === "balance" ? "active" : ""} onClick={() => setChartMode("balance")}>Balance</button><button type="button" className={chartMode === "change" ? "active" : ""} onClick={() => setChartMode("change")}>Change</button></div><span>{chartMode === "balance" ? "Projected balance" : "Gain or loss from today"}</span></div>
             <svg viewBox={`0 0 ${chart.width} ${chart.height}`} preserveAspectRatio="none" role="img" aria-label={`Three bootstrap scenarios over ${HORIZONS.find((item) => item.months === horizonMonths)?.label}. All-history median ending balance ${money(historicalStats.median!)}.`} onMouseMove={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); const relativeX = (event.clientX - bounds.left) / bounds.width * chart.width; const plotWidth = chart.width - chart.pad.left - chart.pad.right; setHoveredMonth(Math.round((relativeX - chart.pad.left) / plotWidth * horizonMonths)); }} onMouseLeave={() => setHoveredMonth(null)}>
               {chart.ticks.map((tick, index) => <g key={index}><line x1={chart.pad.left} x2={chart.width - chart.pad.right} y1={chart.y(tick)} y2={chart.y(tick)} className="scenario-lab-gridline" /><text x={chart.pad.left - 10} y={chart.y(tick) + 4} textAnchor="end" className="scenario-lab-axis-label">{money(tick)}</text></g>)}
               <path d={chart.band} className="scenario-lab-range-band" />
+              <path d={chart.upper} className="scenario-lab-range-edge upper" />
+              <path d={chart.lower} className="scenario-lab-range-edge lower" />
               {chart.medians.map((line) => <path key={line.id} d={line.path} className={`scenario-lab-median-line ${line.id}`} />)}
               <line x1={chart.pad.left} x2={chart.width - chart.pad.right} y1={chart.y(chartMode === "balance" ? simulation.startingCapital : 0)} y2={chart.y(chartMode === "balance" ? simulation.startingCapital : 0)} className="scenario-lab-start-line" />
               {activeMonth != null && <><line x1={chart.x(activeMonth)} x2={chart.x(activeMonth)} y1={chart.pad.top} y2={chart.height - chart.pad.bottom} className="scenario-lab-crosshair" /><circle cx={chart.x(activeMonth)} cy={chart.y(activePoint!.median - chart.offset)} r="4" className="scenario-lab-hover-dot" /></>}
               {chart.xTicks.map((step) => <text key={step} x={chart.x(step)} y={chart.height - 8} textAnchor="middle" className="scenario-lab-axis-label">{step === 0 ? "Start" : step % 12 === 0 ? `${step / 12} yr` : `${step} mo`}</text>)}
             </svg>
+            <div className="scenario-lab-percentile-summary" aria-label="Projected ending balance range"><span>Lower range · 10th percentile <b>{money(historicalStats.p10!)}</b></span><span>Typical · median <b>{money(historicalStats.median!)}</b></span><span>Upper range · 90th percentile <b>{money(historicalStats.p90!)}</b></span></div>
+            {!hasVisibleHistoricalRange && <p className="scenario-lab-range-note">The current assumptions produce almost the same balance across simulated paths. Review the pace, time horizon, or saved trade history to see a wider range.</p>}
             {activePoint && <div className="scenario-lab-chart-tooltip" aria-live="polite"><strong>{activeMonth === 0 ? "Starting point" : `Month ${activeMonth}`}</strong><span>10th percentile <b>{money(activePoint.p10 - chart.offset)}</b></span><span>Median <b>{money(activePoint.median - chart.offset)}</b></span><span>90th percentile <b>{money(activePoint.p90 - chart.offset)}</b></span></div>}
           </div>
         </section>
@@ -343,12 +389,13 @@ const ScenarioLab = ({ user }: { user: UserAccount }) => {
         </ol>
         <div className="scenario-lab-method-scenarios">
           <p><strong>All-history mix:</strong> each pick can be any saved outcome; trade order is ignored.</p>
+          <p><strong>Last 50 trades:</strong> samples recent outcomes in short blocks to retain some streak behavior (uses all available if fewer than 50).</p>
           <p><strong>Recent-results mix:</strong> each pick comes only from the latest 20 saved outcomes (or all available if fewer).</p>
           <p><strong>Three-trade blocks:</strong> picks are consecutive blocks sampled circularly from history, retaining short win/loss streaks in each block.</p>
           <p><strong>Stationary bootstrap:</strong> uses circular blocks with random lengths averaging three trades, so streak lengths vary while retaining short-run dependence.</p>
           <p><strong>User-defined stress:</strong> replays history with your selected loss increase and win reduction; it is a sensitivity test, not a market forecast.</p>
         </div>
-        <p className="scenario-lab-caveat">These are historical resampling scenarios, not guaranteed forecasts or probabilities of what will happen. They use fixed cash P&amp;L amounts and do not model changing position size, compounding, external cash flows, liquidity, or future market conditions. The depletion metric flags paths crossing zero but continues them mathematically; it does not model broker margin or liquidation rules. Long horizons amplify model uncertainty and should be read as a range of possibilities.</p>
+        <p className="scenario-lab-caveat">These are historical resampling scenarios, not guaranteed forecasts or probabilities of what will happen. They use fixed cash P&amp;L amounts and do not model changing position size, compounding, external cash flows, liquidity, or future market conditions. Simulated balances stop at zero after depletion; this does not model broker margin or liquidation rules. Long horizons amplify model uncertainty and should be read as a range of possibilities.</p>
       </section>
     </div>
   );

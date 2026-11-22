@@ -273,7 +273,7 @@ const Withdrawals = ({ user, onSave }: Props) => {
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16, marginBottom: 32 }}>
+      <div className="withdrawal-summary-grid">
         <div
           style={{
             background: "linear-gradient(135deg, rgba(79, 143, 255, 0.12), rgba(79, 143, 255, 0.045))",

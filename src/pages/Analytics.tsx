@@ -27,6 +27,7 @@ import { calculateDailyTradeVolume, calculateTradeVolume } from "../utils/tradeV
 import { getWeekdayOutlook } from "../utils/weekdayNotifications";
 
 import type { UserAccount } from "../types/finance";
+import { formatCurrency as formatAppCurrency, getCurrencyRateDate } from "../utils/money";
 const CHART_GRID_LINE_COLOR = "rgba(148, 163, 184, 0.08)";
 
 const HighchartsChart =
@@ -45,26 +46,11 @@ interface Props {
   onOpenNotifications?: () => void;
 }
 
-const formatMoney = (value: number, currency: string = "INR") =>
-  new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 0,
-  }).format(value);
+const formatMoney = (value: number, currency: string = "INR") => formatAppCurrency(value, currency, 2);
 
-const formatPreciseMoney = (value: number, currency: string = "INR") =>
-  new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 2,
-  }).format(value);
+const formatPreciseMoney = (value: number, currency: string = "INR") => formatAppCurrency(value, currency, 2);
 
-const formatChartMoney = (value: number, currency: string = "INR") =>
-  new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 3,
-  }).format(Number.isFinite(value) ? value : 0);
+const formatChartMoney = (value: number, currency: string = "INR") => formatAppCurrency(Number.isFinite(value) ? value : 0, currency, 2);
 
 const parseLocalDate = (value: string) => {
   const date = value.includes("T")
@@ -239,7 +225,7 @@ const Analytics = ({ user, onSave, onOpenNotifications }: Props) => {
     series: [
       { name: "Transaction volume", type: "bar", barMaxWidth: 16, itemStyle: { color: "#4d8dff", borderRadius: [3, 3, 0, 0] }, data: dailyTradeVolumeRows.map((row) => row.total) },
     ],
-  }), [dailyTradeVolumeRows, user.currency]);
+  }), [dailyTradeVolumeRows, user.currency, user.displayCurrency, getCurrencyRateDate()]);
   const dailyTransactionCostRows = useMemo(() => {
     const byDate = new Map<string, { date: string; total: number }>();
     filteredTransactions.forEach((transaction) => {
@@ -270,7 +256,7 @@ const Analytics = ({ user, onSave, onOpenNotifications }: Props) => {
     series: [
       { name: "Transaction costs", type: "bar", barMaxWidth: 16, itemStyle: { color: "#f5a524", borderRadius: [3, 3, 0, 0] }, data: dailyTransactionCostRows.map((row) => row.total) },
     ],
-  }), [dailyTransactionCostRows, user.currency]);
+  }), [dailyTransactionCostRows, user.currency, user.displayCurrency, getCurrencyRateDate()]);
   const dailyOutcomeOption = useMemo(() => ({
     animation: false,
     grid: { top: 24, right: 8, bottom: 24, left: 30 },
@@ -720,14 +706,15 @@ const Analytics = ({ user, onSave, onOpenNotifications }: Props) => {
   }, [user.investments]);
   const holdingsAppreciationOption = {
     backgroundColor: "transparent",
-    grid: { left: 96, right: 25, top: 12, bottom: 28, containLabel: true },
-    tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, backgroundColor: "#171b22", borderColor: "#303744", textStyle: { color: "#fff" }, formatter: (params: unknown) => {
+    grid: { left: 96, right: 25, top: 12, bottom: 42, containLabel: true },
+    tooltip: { trigger: "axis", confine: true, axisPointer: { type: "shadow" }, backgroundColor: "#171b22", borderColor: "#303744", textStyle: { color: "#fff" }, formatter: (params: unknown) => {
       const point = (Array.isArray(params) ? params[0] : null) as { name?: string; value?: number; dataIndex?: number } | null;
       const holding = investmentAnalysis.openRanked[point?.dataIndex ?? -1];
       return holding ? `${holding.name}<br/>Unrealized P&amp;L: ${formatMoney(holding.appreciation, user.currency)}<br/>Return on cost: ${holding.returnPct.toFixed(2)}%<br/>Current value: ${formatMoney(holding.value, user.currency)}<br/>Cost basis: ${formatMoney(holding.amount, user.currency)}` : "";
     } },
     xAxis: { type: "value", axisLabel: { color: "#7f8799", formatter: (value: number) => formatMoney(value, user.currency) }, splitLine: { lineStyle: { color: "rgba(148,163,184,.08)" } } },
     yAxis: { type: "category", inverse: true, data: investmentAnalysis.openRanked.map((holding) => holding.name), axisLabel: { color: "#aab5c7", width: 90, overflow: "truncate" }, axisLine: { lineStyle: { color: "#303744" } } },
+    media: [{ query: { maxWidth: 520 }, option: { grid: { left: 82, right: 6, top: 14, bottom: 32, containLabel: false }, xAxis: { axisLabel: { fontSize: 9, hideOverlap: true, margin: 5, formatter: (value: number) => new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value) } }, yAxis: { axisLabel: { fontSize: 9, width: 72, margin: 7 } } } }],
     series: [{ type: "bar", name: "Unrealized P&L", markLine: { silent: true, symbol: "none", lineStyle: { color: "#718096", type: "dashed" }, data: [{ xAxis: 0 }] }, data: investmentAnalysis.openRanked.map((holding) => ({ value: holding.appreciation, itemStyle: { color: holding.appreciation >= 0 ? "#36d399" : "#ff667d", borderRadius: [0, 4, 4, 0] } })), barMaxWidth: 16 }],
   };
   const allocationOption = {
@@ -956,19 +943,20 @@ const Analytics = ({ user, onSave, onOpenNotifications }: Props) => {
 
   const cumulativeOption = {
     backgroundColor: "transparent",
-    grid: { left: 74, right: 28, top: 24, bottom: 50, containLabel: true },
+    grid: { left: 12, right: 12, top: 24, bottom: 50, containLabel: true },
     tooltip: { trigger: "axis", backgroundColor: "#171b22", borderColor: "#303744", textStyle: { color: "#fff" }, formatter: (params: unknown) => {
       const point = (Array.isArray(params) ? params[0] : null) as { axisValue?: string; value?: number } | null;
       return `${point?.axisValue ?? ""}<br/>Cumulative P&L: ${formatMoney(Number(point?.value ?? 0), user.currency)}`;
     } },
-    xAxis: { type: "category", data: cumulativeRows.map((row) => row.key), axisLabel: { color: "#7f8799" }, axisLine: { lineStyle: { color: "#303744" } }, splitLine: { show: true, lineStyle: { color: CHART_GRID_LINE_COLOR, width: 1 } } },
+    xAxis: { type: "category", boundaryGap: false, data: cumulativeRows.map((row) => row.key), axisLabel: { color: "#7f8799", hideOverlap: true, interval: "auto" }, axisLine: { lineStyle: { color: "#303744" } }, splitLine: { show: true, lineStyle: { color: CHART_GRID_LINE_COLOR, width: 1 } } },
     yAxis: { type: "value", axisLabel: { color: "#7f8799", formatter: (value: number) => formatMoney(value, user.currency) }, axisLine: { lineStyle: { color: "#303744" } }, splitLine: { show: true, lineStyle: { color: CHART_GRID_LINE_COLOR, width: 1 } } },
+    media: [{ query: { maxWidth: 520 }, option: { grid: { left: 10, right: 10, top: 18, bottom: 42, containLabel: true }, xAxis: { axisLabel: { fontSize: 9, hideOverlap: true, interval: "auto", margin: 8 } }, yAxis: { axisLabel: { fontSize: 9, margin: 6 } } } }],
     series: [{ name: "Cumulative P&L", type: "line", smooth: true, showSymbol: false, data: cumulativeRows.map((row) => row.cumulative), lineStyle: { color: "#4d8dff", width: 3 }, areaStyle: { color: "rgba(77,141,255,0.12)" }, markLine: { silent: true, symbol: "none", lineStyle: { color: "#687386", type: "dashed" }, data: [{ yAxis: 0 }] } }],
   };
   const drawdownOption = {
     backgroundColor: "transparent",
-    grid: { left: 70, right: 25, top: 16, bottom: 42, containLabel: true },
-    tooltip: { trigger: "axis", backgroundColor: "#171b22", borderColor: "#303744", textStyle: { color: "#fff" }, formatter: (params: unknown) => {
+    grid: { left: 12, right: 12, top: 16, bottom: 42, containLabel: true },
+    tooltip: { trigger: "axis", confine: true, backgroundColor: "#171b22", borderColor: "#303744", textStyle: { color: "#fff" }, formatter: (params: unknown) => {
       const point = (Array.isArray(params) ? params[0] : null) as { axisValue?: string; data?: { value?: number; drawdownPct?: number | null; cumulative?: number; peak?: number } } | null;
       if (!point) return "";
       const data = point.data ?? {};
@@ -977,11 +965,12 @@ const Analytics = ({ user, onSave, onOpenNotifications }: Props) => {
     } },
     xAxis: { type: "category", data: drawdownRows.map((row) => row.date), axisLabel: { color: "#7f8799", interval: Math.max(0, Math.ceil(drawdownRows.length / 10) - 1), hideOverlap: true }, axisLine: { lineStyle: { color: "#303744" } } },
     yAxis: { type: "value", max: 0, axisLabel: { color: "#7f8799", formatter: (value: number) => formatMoney(value, user.currency) }, splitLine: { show: true, lineStyle: { color: CHART_GRID_LINE_COLOR, width: 1 } } },
+    media: [{ query: { maxWidth: 520 }, option: { grid: { left: 42, right: 2, top: 12, bottom: 34, containLabel: false }, xAxis: { axisLabel: { fontSize: 9, margin: 6, hideOverlap: true, formatter: (value: string) => value.slice(5) } }, yAxis: { axisLabel: { fontSize: 9, margin: 4, formatter: (value: number) => new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(Math.abs(value)) } } } }],
     series: [{ name: "Peak-to-trough drawdown", type: "line", step: "end", showSymbol: false, data: drawdownRows.map((row) => ({ value: row.drawdown, drawdownPct: row.drawdownPct, cumulative: row.cumulative, peak: row.peak })), lineStyle: { color: "#ff667d", width: 2 }, areaStyle: { color: "rgba(255,102,125,.12)" } }],
   };
   const weekdayOption = {
-    backgroundColor: "transparent", grid: { left: 68, right: 20, top: 42, bottom: 42, containLabel: true },
-    tooltip: { trigger: "axis", axisPointer: { type: "shadow", shadowStyle: { color: "rgba(148, 163, 184, .07)" } }, backgroundColor: "#111722", borderColor: "rgba(148, 163, 184, .22)", borderWidth: 1, textStyle: { color: "#e6edf7", fontSize: 13 }, formatter: (params: unknown) => {
+    backgroundColor: "transparent", grid: { left: 12, right: 12, top: 42, bottom: 42, containLabel: true },
+    tooltip: { trigger: "axis", confine: true, axisPointer: { type: "shadow", shadowStyle: { color: "rgba(148, 163, 184, .07)" } }, backgroundColor: "#111722", borderColor: "rgba(148, 163, 184, .22)", borderWidth: 1, textStyle: { color: "#e6edf7", fontSize: 13 }, formatter: (params: unknown) => {
       const points = (Array.isArray(params) ? params : []) as { axisValue?: string; seriesName?: string; value?: number }[];
       if (!points.length) return "";
       const row = weekdayRows.find((weekday) => weekday.name.slice(0, 3) === points[0].axisValue);
@@ -992,6 +981,7 @@ const Analytics = ({ user, onSave, onOpenNotifications }: Props) => {
     legend: { top: 4, itemWidth: 11, itemHeight: 11, itemGap: 22, textStyle: { color: "#aab5c7", fontSize: 14, fontFamily: "Roboto, Segoe UI, Arial, sans-serif" } },
     xAxis: { type: "category", data: weekdayRows.map((row) => row.name.slice(0, 3)), axisLabel: { color: "#a0aec0", fontSize: 14, fontFamily: "Roboto, Segoe UI, Arial, sans-serif", margin: 15 }, axisTick: { show: false }, axisLine: { lineStyle: { color: "rgba(148, 163, 184, .22)" } }, splitLine: { show: true, lineStyle: { color: CHART_GRID_LINE_COLOR, width: 1 } } },
     yAxis: { type: "value", min: weekdayChartMode === "volume" ? 0 : undefined, axisLabel: { color: "#a0aec0", fontSize: 13, fontFamily: "Roboto, Segoe UI, Arial, sans-serif", margin: 13, formatter: (value: number) => weekdayChartMode === "volume" ? `${value}` : formatMoney(value, user.currency) }, axisLine: { show: false }, axisTick: { show: false }, splitLine: { show: true, lineStyle: { color: CHART_GRID_LINE_COLOR, width: 1 } } },
+    media: [{ query: { maxWidth: 520 }, option: { grid: { left: 38, right: 2, top: 42, bottom: 34, containLabel: false }, legend: { left: "center", itemGap: 10, itemWidth: 10, itemHeight: 10, textStyle: { fontSize: 10 } }, xAxis: { axisLabel: { fontSize: 11, margin: 8 } }, yAxis: { axisLabel: { fontSize: 9, margin: 4, formatter: (value: number) => weekdayChartMode === "volume" ? `${value}` : new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value) } } } }],
     series: weekdayChartMode === "volume"
       ? [{ name: "Winning trades", type: "bar", stack: "trades", barMaxWidth: 30, data: weekdayRows.map((row) => row.winningTrades), itemStyle: { color: "#36d399", borderRadius: [4, 4, 0, 0] } }, { name: "Losing trades", type: "bar", stack: "trades", barMaxWidth: 30, data: weekdayRows.map((row) => row.losingTrades), itemStyle: { color: "#ff6478", borderRadius: [4, 4, 0, 0] } }]
       : [{ name: "Gross profit", type: "bar", barMaxWidth: 26, data: weekdayRows.map((row) => row.profit), itemStyle: { color: "#36d399", borderRadius: [4, 4, 0, 0] } }, { name: "Gross loss", type: "bar", barMaxWidth: 26, data: weekdayRows.map((row) => -row.loss), itemStyle: { color: "#ff6478", borderRadius: [0, 0, 4, 4] } }, { name: "Net P&L", type: "line", data: weekdayRows.map((row) => row.net), symbol: "circle", symbolSize: 7, showSymbol: true, itemStyle: { color: "#4d8dff", borderColor: "#dbeafe", borderWidth: 1.5 }, lineStyle: { color: "#4d8dff", width: 2.5 }, z: 3 }],
@@ -1083,8 +1073,8 @@ const Analytics = ({ user, onSave, onOpenNotifications }: Props) => {
       <ChartPanel className="analytics-trade-volume-chart" title="Monthly trade volume" subtitle={`Recorded trades by calendar month · ${transactionCount} matching trades in the current analytics range`}>
         <EChartsChart option={{
           backgroundColor: "transparent",
-          grid: { left: 58, right: 20, top: 24, bottom: 42, containLabel: true },
-          tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, backgroundColor: "#111722", borderColor: "rgba(148, 163, 184, .22)", textStyle: { color: "#e6edf7" }, formatter: (params: unknown) => {
+          grid: { left: 12, right: 12, top: 24, bottom: 42, containLabel: true },
+          tooltip: { trigger: "axis", confine: true, axisPointer: { type: "shadow" }, backgroundColor: "#111722", borderColor: "rgba(148, 163, 184, .22)", textStyle: { color: "#e6edf7" }, formatter: (params: unknown) => {
             const points = (Array.isArray(params) ? params : []) as { axisValue?: string; seriesName?: string; value?: number }[];
             const row = monthlyTradeActivity.rows.find((item) => item.month === points[0]?.axisValue);
             return row ? `<strong>${row.month}</strong><br/>Total trades: ${row.total}<br/>Winning trades: ${row.wins}<br/>Losing trades: ${row.losses}` : "";
@@ -1092,6 +1082,7 @@ const Analytics = ({ user, onSave, onOpenNotifications }: Props) => {
           legend: { top: 0, textStyle: { color: "#aab5c7" } },
           xAxis: { type: "category", data: monthlyTradeActivity.rows.map((row) => row.month), axisLabel: { color: "#8795a9", hideOverlap: true }, axisTick: { show: false }, axisLine: { lineStyle: { color: "rgba(148, 163, 184, .2)" } } },
           yAxis: { type: "value", min: 0, minInterval: 1, axisLabel: { color: "#8795a9", formatter: (value: number) => `${value}` }, splitLine: { lineStyle: { color: CHART_GRID_LINE_COLOR } } },
+          media: [{ query: { maxWidth: 520 }, option: { grid: { left: 38, right: 2, top: 38, bottom: 32, containLabel: false }, legend: { top: 0, left: "center", itemWidth: 10, itemHeight: 10, itemGap: 7, textStyle: { fontSize: 9 } }, xAxis: { axisLabel: { fontSize: 9, rotate: 0, hideOverlap: true, margin: 7 } }, yAxis: { axisLabel: { fontSize: 9, margin: 4 } } } }],
           series: [
             { name: "Winning trades", type: "bar", stack: "volume", barMaxWidth: 28, data: monthlyTradeActivity.rows.map((row) => row.wins), itemStyle: { color: "#36d399", borderRadius: [4, 4, 0, 0] } },
             { name: "Losing trades", type: "bar", stack: "volume", barMaxWidth: 28, data: monthlyTradeActivity.rows.map((row) => row.losses), itemStyle: { color: "#ff6478", borderRadius: [4, 4, 0, 0] } },
@@ -1101,7 +1092,7 @@ const Analytics = ({ user, onSave, onOpenNotifications }: Props) => {
 
       <ChartPanel className="analytics-cumulative-chart" title="Cumulative profit & loss" subtitle="Cumulative recorded net P&L over the selected range">
         <div className="analytics-chart-controls"><span>Group by</span>{[["day", "Daily"], ["week", "Weekly"], ["month", "Monthly"], ["year", "Yearly"]].map(([value, label]) => <button className={granularity === value ? "active" : ""} type="button" key={value} onClick={() => setGranularity(value)}>{label}</button>)}</div>
-        <EChartsChart option={cumulativeOption} style={{ height: 340, width: "100%" }} notMerge lazyUpdate />
+        <EChartsChart option={cumulativeOption} style={{ height: "clamp(380px, 52vh, 640px)", width: "100%" }} notMerge lazyUpdate />
       </ChartPanel>
 
       <div className="stats-grid">
@@ -1274,6 +1265,9 @@ const Analytics = ({ user, onSave, onOpenNotifications }: Props) => {
           <div className="stat-trend negative">Count of loss transactions</div>
         </div>
 
+      </div>
+
+      <div className="stats-grid analytics-insight-grid">
         <div className="stat-card stat-card-tall">
           <div className="stat-card-top">
             <div className="stat-icon">

@@ -1,7 +1,7 @@
 import { BarChart3, CalendarDays, ChevronLeft, ChevronRight, DollarSign, Lock, Search, ShieldCheck, TrendingDown, TrendingUp, Unlock, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { UserAccount } from "../types/finance";
-import { formatCurrency } from "../utils/money";
+import { formatCurrency, getCurrencyRateDate } from "../utils/money";
 import { getMonthKey, getMonthLabel } from "../utils/monthLocks";
 import { verifyBalancePin } from "../utils/balancePin";
 
@@ -14,6 +14,7 @@ type MonthlyReport = {
   monthKey: string;
   profit: number;
   loss: number;
+  costs: number;
   transactions: number;
 };
 
@@ -38,7 +39,7 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
     const query = costSearch.trim().toLocaleLowerCase();
     if (!query) return costRecords;
     return costRecords.filter((record) => [record.date, record.note, record.category, String(record.amount), formatCurrency(record.amount, user.currency)].join(" ").toLocaleLowerCase().includes(query));
-  }, [costRecords, costSearch, user.currency]);
+  }, [costRecords, costSearch, user.currency, user.displayCurrency, getCurrencyRateDate()]);
   const costGroups = useMemo(() => {
     const groups = new Map<string, { monthKey: string; total: number; records: CostRecord[] }>();
     visibleCostRecords.forEach((record) => {
@@ -59,13 +60,16 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
         monthKey,
         profit: 0,
         loss: 0,
+        costs: 0,
         transactions: 0,
       };
 
       const netSigned = transaction.type === "profit" ? transaction.amount : -transaction.amount;
-      const grossSigned = netSigned + (transaction.costAmount ?? 0);
+      const cost = Math.max(0, transaction.costAmount ?? 0);
+      const grossSigned = netSigned + cost;
       if (grossSigned >= 0) current.profit += grossSigned;
       else current.loss += Math.abs(grossSigned);
+      current.costs += cost;
       current.transactions += 1;
       byMonth.set(monthKey, current);
     });
@@ -85,13 +89,17 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
         String(report.profit),
         String(report.loss),
         String(net),
+        String(report.costs),
+        String(net - report.costs),
         formatCurrency(report.profit, user.currency),
         formatCurrency(report.loss, user.currency),
         formatCurrency(net, user.currency),
+        formatCurrency(report.costs, user.currency),
+        formatCurrency(net - report.costs, user.currency),
         locked ? "locked period secured" : "open for changes",
       ].join(" ").toLocaleLowerCase().includes(query);
     });
-  }, [reports, search, user.lockedMonths, user.currency]);
+  }, [reports, search, user.lockedMonths, user.currency, user.displayCurrency, getCurrencyRateDate()]);
   const pageCount = Math.max(1, Math.ceil(filteredReports.length / REPORT_PAGE_SIZE));
   const visiblePage = Math.min(currentPage, pageCount);
   const pageReports = filteredReports.slice((visiblePage - 1) * REPORT_PAGE_SIZE, visiblePage * REPORT_PAGE_SIZE);
@@ -149,7 +157,7 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
         <div>
           <span className="eyebrow">MONTHLY REPORTS</span>
           <h1>Monthly performance</h1>
-          <p>Review monthly profit and loss before transaction costs, track costs separately, and lock completed months.</p>
+          <p>Review monthly profit and loss before and after transaction costs, and lock completed months.</p>
         </div>
         <div className="reports-heading-badge"><CalendarDays size={17} /><span>{reports.length} months tracked</span></div>
       </div>
@@ -185,6 +193,8 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
               <th>Profit before costs</th>
               <th>Loss before costs</th>
               <th>Net before costs</th>
+              <th>Costs</th>
+              <th>Net after costs</th>
               <th>Status</th>
               <th aria-label="Month lock action" />
             </tr>
@@ -200,6 +210,8 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
                   <td className="report-profit">+{formatCurrency(report.profit, user.currency)}</td>
                   <td className="report-loss">-{formatCurrency(report.loss, user.currency)}</td>
                   <td className={net >= 0 ? "report-profit" : "report-loss"}>{formatCurrency(net, user.currency)}</td>
+                  <td className="report-cost">-{formatCurrency(report.costs, user.currency)}</td>
+                  <td className={net - report.costs >= 0 ? "report-profit" : "report-loss"}>{formatCurrency(net - report.costs, user.currency)}</td>
                   <td>
                     <span className={locked ? "month-status locked" : "month-status open"}>
                       {locked ? <Lock size={13} /> : <Unlock size={13} />}
@@ -218,7 +230,7 @@ const Reports = ({ user, onToggleMonthLock }: Props) => {
               );
             })}
             {filteredReports.length === 0 && (
-              <tr><td colSpan={7} className="reports-empty">{reports.length ? "No monthly reports match your search." : "No transactions are available for a monthly report yet."}</td></tr>
+              <tr><td colSpan={9} className="reports-empty">{reports.length ? "No monthly reports match your search." : "No transactions are available for a monthly report yet."}</td></tr>
             )}
           </tbody>
         </table>

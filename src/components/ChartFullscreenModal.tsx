@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChartCandlestick, LineChart, MousePointer2, Percent, RotateCcw, Ruler, Square, TrendingUp, Undo2, X, Trash2 } from "lucide-react";
+import { ChartCandlestick, ChevronDown, ChevronUp, LineChart, MousePointer2, Percent, RotateCcw, Ruler, Square, TrendingUp, Undo2, X, Trash2 } from "lucide-react";
 import Highcharts from "highcharts";
 import HighchartsStock from "highcharts/highstock";
 import "highcharts/modules/accessibility";
@@ -10,6 +10,7 @@ import ReactECharts from "echarts-for-react";
 import type { EChartsInstance } from "echarts-for-react";
 import { usePersistentState } from "../hooks/usePersistentState";
 import { getCandleWindow, groupCandles } from "../utils/candleGrouping";
+import { formatCurrency } from "../utils/money";
 
 const HighchartsChart =
   (HighchartsReact as unknown as {
@@ -142,6 +143,7 @@ const formatCandleTime = (timestamp: number) => new Date(timestamp).toLocaleStri
 
 interface Props {
   open: boolean;
+  currency?: string;
   title: string;
   subtitle: string;
   kind: ChartKind;
@@ -156,6 +158,7 @@ interface Props {
 
 const ChartFullscreenModal = ({
   open,
+  currency = "INR",
   title,
   subtitle,
   kind,
@@ -172,10 +175,15 @@ const ChartFullscreenModal = ({
   const echartsInstanceRef = useRef<EChartsInstance | null>(null);
   const [rangeSelection, setRangeSelection] = usePersistentState("charts.fullscreenRange", 9);
   const [candleIntervalSelection, setCandleIntervalSelection] = usePersistentState("charts.fullscreenCandleInterval", 9);
+  const [showRangeNavigator, setShowRangeNavigator] = useState(false);
   const [chartMode, setChartMode] =
     useState<ChartMode>(defaultChartMode);
+  const [compactChartViewport, setCompactChartViewport] = useState(() =>
+    typeof window !== "undefined" && window.matchMedia("(max-width: 540px)").matches
+  );
   const [candleReadout, setCandleReadout] = useState<CandleReadout | null>(null);
   const drawingStorageKey = `charts.drawings.${drawingScope ?? title}`;
+  useEffect(() => { setShowRangeNavigator(false); }, [open, title]);
   const [drawings, setDrawings] = usePersistentState<ChartDrawing[]>(drawingStorageKey, []);
   const [drawingTool, setDrawingTool] = useState<DrawingTool>("select");
   const [drawingColor, setDrawingColor] = useState("#ef476f");
@@ -528,6 +536,14 @@ const ChartFullscreenModal = ({
     if (chartMode === "candlestick") chartRef.current?.chart?.redraw(false);
   }, [chartMode, safeDrawings, safeDrawingPreview, selectedDrawingId]);
 
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 540px)");
+    const updateCompactViewport = () => setCompactChartViewport(query.matches);
+    updateCompactViewport();
+    query.addEventListener("change", updateCompactViewport);
+    return () => query.removeEventListener("change", updateCompactViewport);
+  }, []);
+
   const fullscreenHighchartsOptions = useMemo(() => {
     const selectedOptions =
       chartMode === "candlestick"
@@ -557,7 +573,7 @@ const ChartFullscreenModal = ({
           label: { ...crosshair.label, enabled: true },
         } : axis.crosshair,
         ...(chartMode === "candlestick"
-          ? { labels: { ...axis.labels, x: Math.max(axis.labels?.x ?? 0, 48) } }
+          ? { labels: { ...axis.labels, x: compactChartViewport ? 0 : Math.max(axis.labels?.x ?? 0, 48) } }
           : {}),
       };
     };
@@ -577,7 +593,9 @@ const ChartFullscreenModal = ({
     const sourceSpacing = selectedOptions.chart?.spacing ?? [12, 24, 20, 12];
     const fullscreenSpacing: [number, number, number, number] = [
       sourceSpacing[0] ?? 12,
-      Math.max(sourceSpacing[1] ?? 24, chartMode === "candlestick" ? 104 : hasRightYAxis ? 72 : 24),
+      compactChartViewport
+        ? Math.min(sourceSpacing[1] ?? 24, 20)
+        : Math.max(sourceSpacing[1] ?? 24, chartMode === "candlestick" ? 104 : hasRightYAxis ? 72 : 24),
       sourceSpacing[2] ?? 20,
       sourceSpacing[3] ?? 12,
     ];
@@ -812,7 +830,7 @@ const ChartFullscreenModal = ({
         }
 
         const value = axis.toValue(point.chartY);
-        const text = `₹${Math.round(value).toLocaleString("en-IN")}`;
+        const text = formatCurrency(value, currency);
 
         if (!label) {
           label = chart.renderer
@@ -848,15 +866,29 @@ const ChartFullscreenModal = ({
 
     return {
       ...selectedOptions,
-      tooltip: { ...selectedOptions.tooltip, enabled: chartMode !== "candlestick" },
+      // Candlestick values are rendered in the fixed readout below. The Stock
+      // tooltip can be clipped under the drawing rail on narrow screens and
+      // obscures the plot, so keep it off in fullscreen for both modes.
+      tooltip: chartMode === "candlestick"
+        ? { enabled: false, outside: false }
+        : { ...selectedOptions.tooltip, enabled: selectedOptions.tooltip?.enabled !== false },
       ...(chartMode === "candlestick" ? {
         plotOptions: {
           ...selectedOptions.plotOptions,
           candlestick: {
             ...selectedOptions.plotOptions?.candlestick,
+            opacity: 1,
             states: {
               ...selectedOptions.plotOptions?.candlestick?.states,
-              hover: { enabled: true },
+              inactive: { ...(selectedOptions.plotOptions?.candlestick?.states?.inactive ?? {}), opacity: 1 },
+              hover: { enabled: false },
+            },
+          },
+          series: {
+            ...selectedOptions.plotOptions?.series,
+            states: {
+              ...selectedOptions.plotOptions?.series?.states,
+              inactive: { ...(selectedOptions.plotOptions?.series?.states?.inactive ?? {}), opacity: 1 },
             },
           },
         },
@@ -887,13 +919,15 @@ const ChartFullscreenModal = ({
       ...(chartMode === "candlestick" ? {
         navigator: {
           ...selectedOptions.navigator,
-          enabled: true,
+          enabled: showRangeNavigator,
+          height: showRangeNavigator ? (compactChartViewport ? 36 : selectedOptions.navigator?.height ?? 72) : 0,
+          margin: showRangeNavigator ? (compactChartViewport ? 5 : selectedOptions.navigator?.margin ?? 18) : 0,
           liveRedraw: true,
         },
         scrollbar: {
           ...selectedOptions.scrollbar,
-          enabled: true,
-          height: 12,
+          enabled: showRangeNavigator,
+          height: showRangeNavigator ? (compactChartViewport ? 8 : 12) : 0,
           liveRedraw: true,
           barBackgroundColor: "rgba(59, 130, 246, 0.35)",
           barBorderColor: "rgba(96, 165, 250, 0.8)",
@@ -907,7 +941,7 @@ const ChartFullscreenModal = ({
       xAxis: fullscreenXAxis,
       yAxis: fullscreenYAxis,
     };
-  }, [chartMode, highchartsOptions, stockOptions]);
+  }, [chartMode, compactChartViewport, currency, highchartsOptions, stockOptions, showRangeNavigator]);
 
   const fullscreenEchartsOption = useMemo(() => {
     if (!echartsOption) {
@@ -1402,6 +1436,10 @@ const ChartFullscreenModal = ({
                 <RotateCcw size={14} />
                 <span>Reset view</span>
               </button>
+              {chartMode === "candlestick" && title.toLowerCase().includes("wealth") && <button type="button" className="chart-reset-view-button chart-navigator-toggle" onClick={() => setShowRangeNavigator((shown) => !shown)} aria-expanded={showRangeNavigator} aria-controls="fullscreen-chart-range-navigator">
+                {showRangeNavigator ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+                <span>{showRangeNavigator ? "Hide range navigator" : "Show range navigator"}</span>
+              </button>}
             </div>
           )}
           {chartMode === "candlestick" && title.toLowerCase().includes("wealth") && <div className="chart-drawing-tools" role="toolbar" aria-orientation="vertical" aria-label="Candlestick drawing tools">
@@ -1452,7 +1490,7 @@ const ChartFullscreenModal = ({
             />
           ) : chartMode === "candlestick" && fullscreenHighchartsOptions ? (
             <HighchartsChart
-              key="fullscreen-candlestick-chart"
+              key={`fullscreen-candlestick-chart-${compactChartViewport ? "mobile" : "wide"}`}
               ref={chartRef}
               highcharts={
                 chartMode === "candlestick"
@@ -1462,9 +1500,10 @@ const ChartFullscreenModal = ({
               constructorType={
                 chartMode === "candlestick" ? "stockChart" : "chart"
               }
-              allowChartUpdate={false}
+              allowChartUpdate
               options={fullscreenHighchartsOptions}
               containerProps={{
+                id: "fullscreen-chart-range-navigator",
                 style: {
                   width: "100%",
                   height: "100%",

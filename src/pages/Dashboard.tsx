@@ -15,8 +15,6 @@ import {
   Download,
   Search,
   ArrowDownUp,
-  BellRing,
-  ArrowRight,
   ShieldAlert,
   TrendingDown,
   TrendingUp,
@@ -33,7 +31,6 @@ import { formatCurrency } from "../utils/money";
 import { calculateBalanceStats, getAuthoritativeBalance } from "../utils/balance";
 import { usePersistentState } from "../hooks/usePersistentState";
 import { groupCandles } from "../utils/candleGrouping";
-import { getWeekdayOutlook } from "../utils/weekdayNotifications";
 
 const HighchartsStockChart =
   (HighchartsReact as unknown as {
@@ -196,10 +193,9 @@ const createDailySeries = (
 interface Props {
   user: UserAccount;
   onAdd: () => void;
-  onOpenNotifications: () => void;
 }
 
-const Dashboard = ({ user, onAdd, onOpenNotifications }: Props) => {
+const Dashboard = ({ user, onAdd }: Props) => {
   const dashboardRef = useRef<HTMLDivElement>(null);
   const [currentHour, setCurrentHour] = useState(() => new Date().getHours());
   const [currentLocalDate, setCurrentLocalDate] = useState(() => formatDateKey(new Date()));
@@ -224,15 +220,6 @@ const Dashboard = ({ user, onAdd, onOpenNotifications }: Props) => {
       document.removeEventListener("visibilitychange", refreshDashboardDate);
     };
   }, []);
-  const weekdayOutlook = useMemo(() => {
-    const now = new Date();
-    const isTradingWeekday = now.getDay() >= 1 && now.getDay() <= 5;
-    // Keep today's outlook visible through 6:59 PM local time. Starting at
-    // 7:00 PM, getWeekdayOutlook advances to the next trading weekday.
-    if (isTradingWeekday && currentHour < 19) now.setDate(now.getDate() - 1);
-    return getWeekdayOutlook(user.transactions, now);
-  }, [user.transactions, currentLocalDate, currentHour]);
-  const weekdayOutlookIsToday = formatDateKey(weekdayOutlook.date) === currentLocalDate;
   const dailyPnlHistory = useMemo(() => {
     const days = new Map<string, { date: Date; net: number; gross: number; profit: number; loss: number; trades: UserAccount["transactions"] }>();
     user.transactions.forEach((transaction) => {
@@ -309,6 +296,7 @@ const Dashboard = ({ user, onAdd, onOpenNotifications }: Props) => {
     subtitle: string;
     average: number;
     tradeCount: number;
+    chartHeight: number;
     options: Highcharts.Options;
   } | null>(null);
   const [peakTradeChart, setPeakTradeChart] = useState<{
@@ -659,6 +647,9 @@ const Dashboard = ({ user, onAdd, onOpenNotifications }: Props) => {
   }, [dashboardPeriod, user.startingBalance, user.transactions]);
 
   const openAverageTradeChart = (tradeType: "profit" | "loss") => {
+    // Let the detailed chart use most of the viewport while preserving room for
+    // the title, summary values, and close control.
+    const chartHeight = Math.min(560, Math.max(240, Math.round(window.innerHeight * 0.58)));
     const months = dashboardPerformancePeriods.find((period) => period.value === dashboardPeriod)?.value;
     const monthCount = months === "1m" ? 1 : months === "3m" ? 3 : months === "6m" ? 6 : months === "1y" ? 12 : null;
     const start = monthCount === null ? null : subtractCalendarMonths(new Date(), monthCount);
@@ -697,12 +688,16 @@ const Dashboard = ({ user, onAdd, onOpenNotifications }: Props) => {
       subtitle: `${trades.length} ${tradeType === "profit" ? "profitable" : "losing"} trades · ${dashboardPeriodLabel.toLowerCase()} · selected trade amounts vs. average profit and loss`,
       average: trades.length ? total / trades.length : 0,
       tradeCount: trades.length,
+      chartHeight,
       options: {
-        chart: { type: "line", backgroundColor: "transparent", height: 580, animation: false, zooming: { type: "x", resetButton: { relativeTo: "plotBox", position: { align: "right", verticalAlign: "top", x: -10, y: 10 } } } },
+        chart: { type: "line", backgroundColor: "transparent", height: chartHeight, animation: false, zooming: { type: "x", resetButton: { relativeTo: "plotBox", position: { align: "right", verticalAlign: "top", x: -10, y: 10 } } } },
+        navigator: { enabled: false },
+        scrollbar: { enabled: false },
+        rangeSelector: { enabled: false },
         title: { text: undefined },
         xAxis: { type: "datetime", title: { text: "Trade date" } },
-        yAxis: { title: { text: `Amount (${user.currency})` }, min: 0 },
-        tooltip: { shared: true, xDateFormat: "%e %b %Y", valuePrefix: `${user.currency} `, valueDecimals: 2 },
+        yAxis: { title: { text: `Amount (${user.displayCurrency ?? user.currency})` }, min: 0, labels: { formatter: function () { return formatMoney(Number(this.value)); } } },
+        tooltip: { shared: true, xDateFormat: "%e %b %Y", formatter: function (this: Highcharts.Point) { const points = this.points ?? [this]; return `${Highcharts.dateFormat("%e %b %Y", Number(this.x))}<br/>${points.map((point) => `<span style="color:${point.color}">●</span> ${point.series.name}: <b>${formatMoney(Number(point.y ?? 0))}</b>`).join("<br/>")}`; } },
         legend: { enabled: true },
         credits: { enabled: false },
         plotOptions: { series: { animation: false, marker: { enabled: trades.length <= 40, radius: 3 } } },
@@ -756,8 +751,8 @@ const Dashboard = ({ user, onAdd, onOpenNotifications }: Props) => {
         chart: { type: "line", backgroundColor: "transparent", height: 500, animation: false, zooming: { type: "x", resetButton: { relativeTo: "plotBox", position: { align: "right", verticalAlign: "top", x: -10, y: 10 } } } },
         title: { text: undefined },
         xAxis: { type: "datetime", title: { text: "Trade date" } },
-        yAxis: { title: { text: `Cumulative result (${user.currency})` }, plotLines: [{ value: 0, color: "#718096", width: 1, dashStyle: "ShortDash" }] },
-        tooltip: { shared: true, xDateFormat: "%e %b %Y", valuePrefix: `${user.currency} `, valueDecimals: 2 },
+        yAxis: { title: { text: `Cumulative result (${user.displayCurrency ?? user.currency})` }, labels: { formatter: function () { return formatMoney(Number(this.value)); } }, plotLines: [{ value: 0, color: "#718096", width: 1, dashStyle: "ShortDash" }] },
+        tooltip: { shared: true, xDateFormat: "%e %b %Y", formatter: function (this: Highcharts.Point) { const points = this.points ?? [this]; return `${Highcharts.dateFormat("%e %b %Y", Number(this.x))}<br/>${points.map((point) => `<span style="color:${point.color}">●</span> ${point.series.name}: <b>${formatMoney(Number(point.y ?? 0))}</b>`).join("<br/>")}`; } },
         legend: { enabled: true },
         credits: { enabled: false },
         plotOptions: { series: { animation: false, marker: { enabled: datedTrades.length <= 80, radius: 3 } } },
@@ -1071,7 +1066,7 @@ const Dashboard = ({ user, onAdd, onOpenNotifications }: Props) => {
           height: 430,
           // Keep enough room for the right-side crosshair price flag so it
           // does not cover the last candle.
-          spacing: [14, 84, 22, 20],
+          spacing: [8, 24, 12, 8],
           zoomType: undefined,
           panning: { enabled: false },
           zooming: {
@@ -1286,7 +1281,7 @@ const Dashboard = ({ user, onAdd, onOpenNotifications }: Props) => {
         height: 430,
         // Reserve a right gutter for the y-axis crosshair label. Without it,
         // the label can sit on top of the final candle near the chart edge.
-        spacing: [14, 84, 24, 20],
+        spacing: [8, 24, 12, 8],
         style: { fontFamily: "Inter, system-ui, sans-serif" },
         // Keep the embedded dashboard chart static; zooming is available in fullscreen.
         zoomType: undefined,
@@ -1506,9 +1501,8 @@ const Dashboard = ({ user, onAdd, onOpenNotifications }: Props) => {
       height: 300,
       style: { fontFamily: "Inter, system-ui, sans-serif" },
       animation: { duration: 450, easing: "easeOutQuart" } as Highcharts.AnimationOptionsObject,
-      // The y-axis is on the right; preserve a clear gutter for currency
-      // labels so they never sit on top of the last wealth data point.
-      spacing: [8, 72, 14, 12],
+      // Keep the right-side currency axis readable without wasting plot width.
+      spacing: [8, 28, 14, 8],
       borderRadius: 0,
       zoomType: undefined,
       panning: { enabled: false },
@@ -1516,6 +1510,11 @@ const Dashboard = ({ user, onAdd, onOpenNotifications }: Props) => {
       reflow: true,
       resetZoomButton: { theme: { display: "none" } },
     },
+    responsive: { rules: [{ condition: { maxWidth: 520 }, chartOptions: {
+      chart: { spacing: [8, 42, 12, 4], height: 320 },
+      xAxis: { labels: { style: { fontSize: "9px" }, autoRotation: [0] } },
+      yAxis: { labels: { style: { fontSize: "9px" }, x: 0 } },
+    } }] },
     title: { text: undefined },
     subtitle: { text: undefined },
     credits: { enabled: false },
@@ -1804,6 +1803,12 @@ const Dashboard = ({ user, onAdd, onOpenNotifications }: Props) => {
         },
       },
     },
+    media: [{ query: { maxWidth: 520 }, option: {
+      grid: { left: 8, right: 44, top: 10, bottom: 52, containLabel: false },
+      legend: { left: "center", itemGap: 16, padding: [6, 4], textStyle: { fontSize: 10 } },
+      xAxis: { axisLabel: { fontSize: 9, hideOverlap: true, margin: 7 } },
+      yAxis: { axisLabel: { fontSize: 9, margin: 5, formatter: (value: number) => new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value) } },
+    } }],
     series: [
       {
         name: "Profit",
@@ -1893,16 +1898,6 @@ const Dashboard = ({ user, onAdd, onOpenNotifications }: Props) => {
 
         </div>
 
-        <aside className={`dashboard-weekday-reminder ${weekdayOutlook.status}`} aria-label="Weekday trading reminder">
-          <div className="dashboard-weekday-reminder-icon"><BellRing size={17} /></div>
-          <div className="dashboard-weekday-reminder-copy">
-            <span>{weekdayOutlookIsToday ? "TODAY'S OUTLOOK" : "NEXT TRADING DAY"} · {weekdayOutlook.dayName.toUpperCase()}</span>
-            <strong>{weekdayOutlook.status === "caution" ? `A discipline reminder for ${weekdayOutlook.dayName}` : weekdayOutlook.status === "strong" ? `${weekdayOutlook.dayName} has been stronger in your history` : `Your ${weekdayOutlook.dayName} outlook`}</strong>
-            <small>{weekdayOutlook.message}</small>
-          </div>
-          <button type="button" onClick={onOpenNotifications}>Notification center <ArrowRight size={15} /></button>
-        </aside>
-
         <div className="dashboard-actions">
           <label className="dashboard-period-control">
             <span className="sr-only">Dashboard performance period</span>
@@ -1985,6 +1980,7 @@ const Dashboard = ({ user, onAdd, onOpenNotifications }: Props) => {
           positive={(dashboardPerformanceIncludesCosts ? periodStats.net : periodStats.grossNet) >= 0}
           icon={<BarChart3 size={19} />}
           colorVariant={(dashboardPerformanceIncludesCosts ? periodStats.net : periodStats.grossNet) >= 0 ? "green" : "amber"}
+          className="dashboard-net-performance-card"
           headerAction={<label className="dashboard-pnl-cost-toggle" title="Include transaction costs in dashboard performance" onClick={(event) => event.stopPropagation()}><span>Costs</span><input type="checkbox" role="switch" checked={dashboardPerformanceIncludesCosts} onChange={(event) => setDashboardPerformanceIncludesCosts(event.target.checked)} aria-label="Include transaction costs in dashboard performance" /></label>}
         />
       </div>
@@ -2067,6 +2063,7 @@ const Dashboard = ({ user, onAdd, onOpenNotifications }: Props) => {
           colorVariant={oneYearPerformance.net >= 0 ? "green" : "red"}
         />
         <StatCard
+          className="dashboard-extreme-stat-card"
           title="Peak Profit"
           value={peakProfit}
           formatValue={(value) => formatCurrency(value, user.currency)}
@@ -2083,6 +2080,7 @@ const Dashboard = ({ user, onAdd, onOpenNotifications }: Props) => {
         />
 
         <StatCard
+          className="dashboard-extreme-stat-card"
           title="Peak Loss"
           value={peakLoss}
           formatValue={(value) => formatCurrency(value, user.currency)}
@@ -2286,6 +2284,7 @@ const Dashboard = ({ user, onAdd, onOpenNotifications }: Props) => {
         <Suspense fallback={null}>
         <ChartFullscreenModal
           open
+          currency={user.currency}
           title={fullscreenChart.title}
           subtitle={fullscreenChart.subtitle}
           kind={fullscreenChart.kind}
@@ -2311,7 +2310,7 @@ const Dashboard = ({ user, onAdd, onOpenNotifications }: Props) => {
               <article><span>Trades in period</span><strong>{averageTradeChart.tradeCount}</strong></article>
             </div>
             {averageTradeChart.tradeCount ? (
-              <div className="average-trade-dialog-chart"><HighchartsStockChart highcharts={Highcharts} options={averageTradeChart.options} allowChartUpdate={false} /></div>
+              <div className="average-trade-dialog-chart" style={{ height: averageTradeChart.chartHeight + 12 }}><HighchartsStockChart highcharts={Highcharts} options={averageTradeChart.options} allowChartUpdate={false} /></div>
             ) : (
               <div className="average-trade-dialog-empty">No matching trades in this period.</div>
             )}

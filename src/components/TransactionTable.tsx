@@ -153,8 +153,10 @@ const TransactionTable = ({
         </div>
       </div>
 
+      <p className="transaction-mobile-hint">Expand a record to view its full breakdown.</p>
+
       <div className="enterprise-table-wrapper">
-        <table className="enterprise-table">
+        <table className="enterprise-table transaction-list-table">
           <thead>
             <tr>
               <th>Date / Time</th>
@@ -162,7 +164,6 @@ const TransactionTable = ({
               <th>Trade Direction</th>
               <th>Category</th>
               <th className="transaction-note-column">Notes</th>
-              <th className="numeric-cell">Trades</th>
               <th className="numeric-cell">Gross</th>
               <th className="numeric-cell">Cost</th>
               <th className="numeric-cell">Net Amount</th>
@@ -238,24 +239,16 @@ const TransactionTable = ({
                       {transaction.note || "—"}
                     </span>
                   </td>
-
-
-                  <td className="numeric-cell">
-                    {tradesCount ? (
-                      <span className="trade-count-pill">{tradesCount}</span>
-                    ) : "-"}
+                  <td className="numeric-cell text-muted">
+                    {transaction.grossAmount ? formatCurrency(transaction.grossAmount, user.currency) : "-"}
                   </td>
 
                   <td className="numeric-cell text-muted">
-                    {transaction.grossAmount ? `₹${transaction.grossAmount.toLocaleString("en-IN")}` : "-"}
-                  </td>
-
-                  <td className="numeric-cell text-muted">
-                    {transaction.costAmount ? `₹${transaction.costAmount.toLocaleString("en-IN")}` : "-"}
+                    {transaction.costAmount ? formatCurrency(transaction.costAmount, user.currency) : "-"}
                   </td>
 
                   <td className={`numeric-cell net-amount ${isProfit ? "profit" : "loss"}`}>
-                    {isProfit ? "+" : "-"}₹{transaction.amount.toLocaleString("en-IN")}
+                    {isProfit ? "+" : "−"}{formatCurrency(transaction.amount, user.currency)}
                   </td>
 
                   <td className={`numeric-cell transaction-return ${returnPercent == null ? "unavailable" : returnPercent > 0 ? "profit" : returnPercent < 0 ? "loss" : "zero"}`} title={returnPercent == null ? "Return is shown when entry price, exit price, and quantity are recorded." : `Net P&L divided by invested amount (${formatCurrency(investedAmount!, user.currency)}).`}>
@@ -263,7 +256,7 @@ const TransactionTable = ({
                   </td>
 
                   <td className="numeric-cell balance-cell">
-                    <span className="balance-amount">₹{Math.round(transaction.balance).toLocaleString("en-IN")}</span>
+                    <span className="balance-amount">{formatCurrency(transaction.balance, user.currency)}</span>
                   </td>
 
                   <td className="action-column">

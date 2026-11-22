@@ -2,7 +2,7 @@ import { Fragment, useDeferredValue, useEffect, useMemo, useRef, useState } from
 import ReactECharts from "echarts-for-react";
 import { ChartNoAxesCombined, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleDollarSign, Landmark, Pencil, Plus, Search, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Wallet, X } from "lucide-react";
 import type { Investment, InvestmentType, UserAccount } from "../types/finance";
-import { formatCurrency } from "../utils/money";
+import { formatCurrency, getCurrencyRateDate } from "../utils/money";
 import { usePersistentState } from "../hooks/usePersistentState";
 import { useAppDialog } from "../components/AppDialog";
 import { getMonthKey, getMonthLabel } from "../utils/monthLocks";
@@ -124,7 +124,6 @@ const InvestmentPage = ({ user, onSave }: Props) => {
   const [comparisonPage, setComparisonPage] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [editing, setEditing] = useState<Investment | null>(null);
-  const [withdrawalOnlyEdit, setWithdrawalOnlyEdit] = useState(false);
   const [form, setForm] = useState(emptyForm());
   const [filterType, setFilterType] = usePersistentState<InvestmentType | "all">("investments.assetType", "all");
   const [filterStatus, setFilterStatus] = usePersistentState<"all" | "open" | "closed">("investments.status", "all");
@@ -239,7 +238,7 @@ const InvestmentPage = ({ user, onSave }: Props) => {
         barMaxWidth: 14,
       }] : []),
     ],
-  }), [comparisonChartHoldings, hasComparisonLoss, user.currency]);
+  }), [comparisonChartHoldings, hasComparisonLoss, user.currency, user.displayCurrency, getCurrencyRateDate()]);
   const fmt = (value: number) => formatCurrency(value, user.currency ?? "INR");
   const openInvestedByType = filtered.reduce<Partial<Record<InvestmentType, number>>>((totals, item) => {
     if (!item.isClosed) totals[item.type] = (totals[item.type] ?? 0) + item.amount;
@@ -250,56 +249,28 @@ const InvestmentPage = ({ user, onSave }: Props) => {
     .map(([type, amount]) => `${TYPE_LABELS[type]} ${fmt(amount)}`)
     .join(" · ");
   const lockedMonths = user.lockedMonths ?? [];
-  const isInvestmentMonthLocked = (item: Pick<Investment, "date">) => lockedMonths.includes(getMonthKey(item.date));
-  const openAdd = () => { setEditing(null); setWithdrawalOnlyEdit(false); setForm(emptyForm()); setShowModal(true); };
+  const isInvestmentMonthLocked = (item: Pick<Investment, "date" | "isClosed">) => item.isClosed && lockedMonths.includes(getMonthKey(item.date));
+  const openAdd = () => { setEditing(null); setForm(emptyForm()); setShowModal(true); };
   const openEdit = (item: Investment) => {
     const monthLocked = isInvestmentMonthLocked(item);
-    if (monthLocked && !(item.isClosed && !item.withdrawalRecorded)) {
-      void showAlert(`${getMonthLabel(getMonthKey(item.date))} is locked. Unlock that month in Reports before editing this investment.`, "Month locked");
+    if (monthLocked) {
+      void showAlert(`${getMonthLabel(getMonthKey(item.date))} is locked. Unlock it in Reports before editing “${item.name}.”`, "Investment locked");
       return;
     }
     const quantity = item.quantity ?? 1;
     setEditing(item);
-    setWithdrawalOnlyEdit(monthLocked);
     setForm({ ...item, withdrawalRecorded: Boolean(item.withdrawalRecorded), quantity, entryPrice: item.entryPrice ?? item.amount / quantity, date: item.date.split("T")[0] });
     setShowModal(true);
   };
   const save = () => {
-    if (withdrawalOnlyEdit && editing) {
-      const original = investments.find((item) => item.id === editing.id);
-      if (!original || !original.isClosed || original.withdrawalRecorded || !isInvestmentMonthLocked(original)) {
-        void showAlert("This locked investment can only be updated to record its sale proceeds as a withdrawal.", "Investment locked");
-        return;
-      }
-
-      const existingSale = (user.withdrawals ?? []).find((entry) => entry.sourceInvestmentId === original.id);
-      const withdrawal = {
-        id: existingSale?.id ?? crypto.randomUUID(),
-        date: `${original.date.split("T")[0]}T12:00:00`,
-        amount: getInvestmentValue(original),
-        method: "investment" as const,
-        sourceInvestmentId: original.id,
-        note: `Investment sale · ${original.name.trim()}`,
-        status: "completed" as const,
-      };
-      onSave({
-        ...user,
-        investments: investments.map((item) => item.id === original.id ? { ...item, withdrawalRecorded: Boolean(form.withdrawalRecorded) } : item),
-        withdrawals: form.withdrawalRecorded
-          ? [withdrawal, ...(user.withdrawals ?? []).filter((entry) => entry.sourceInvestmentId !== original.id)]
-          : (user.withdrawals ?? []).filter((entry) => entry.sourceInvestmentId !== original.id),
-      });
-      setShowModal(false);
-      setWithdrawalOnlyEdit(false);
-      setCurrentPage(1);
+    const lockApplies = Boolean(editing?.isClosed || form.isClosed);
+    const lockedInvestmentDate = lockApplies
+      ? (editing ? [editing.date, form.date] : [form.date]).find((date) => lockedMonths.includes(getMonthKey(date)))
+      : undefined;
+    if (lockedInvestmentDate) {
+      const investmentName = (editing?.name ?? form.name.trim()) || "this investment";
+      void showAlert(`${getMonthLabel(getMonthKey(lockedInvestmentDate))} is locked. Unlock it in Reports before saving “${investmentName}.”`, "Investment locked");
       return;
-    }
-    if (editing) {
-      const lockedMonth = [editing.date, form.date].find((date) => lockedMonths.includes(getMonthKey(date)));
-      if (lockedMonth) {
-        void showAlert(`${getMonthLabel(getMonthKey(lockedMonth))} is locked. Unlock that month in Reports before editing this investment.`, "Month locked");
-        return;
-      }
     }
     const quantity = form.quantity || 1;
     const directPnlMode = form.directPnl != null;
@@ -334,13 +305,12 @@ const InvestmentPage = ({ user, onSave }: Props) => {
     } : null;
     onSave({ ...user, investments: next, withdrawals: saleWithdrawal ? [saleWithdrawal, ...otherWithdrawals] : otherWithdrawals });
     setShowModal(false);
-    setWithdrawalOnlyEdit(false);
     setCurrentPage(1);
   };
   const remove = async (id: string) => {
     const item = investments.find((investment) => investment.id === id);
     if (item && isInvestmentMonthLocked(item)) {
-      await showAlert(`${getMonthLabel(getMonthKey(item.date))} is locked. Unlock that month in Reports before deleting this investment.`, "Month locked");
+      await showAlert(`${getMonthLabel(getMonthKey(item.date))} is locked. Unlock it in Reports before deleting “${item.name}.”`, "Investment locked");
       return;
     }
     if (await showConfirm("Delete this investment?", "Delete investment")) {
@@ -382,6 +352,7 @@ const InvestmentPage = ({ user, onSave }: Props) => {
       const pct = item.amount ? pnl / item.amount * 100 : 0;
       const positive = pnl >= 0;
       const isExpanded = expandedInvestmentId === item.id;
+      const monthLocked = isInvestmentMonthLocked(item);
       const date = new Date(item.date);
       const maturityDate = getFixedDepositMaturityDate(item);
       const fdRemainingTerm = maturityDate ? getFixedDepositRemainingTerm(maturityDate) : null;
@@ -389,11 +360,11 @@ const InvestmentPage = ({ user, onSave }: Props) => {
 
       return <Fragment key={item.id}>
         <tr>
-          <td className="investment-name">{item.name}</td>
+          <td className="investment-name">{item.name}<span className="investment-mobile-badges"><span className="investment-type-badge" style={{ color: TYPE_COLORS[item.type], borderColor: `${TYPE_COLORS[item.type]}55`, backgroundColor: `${TYPE_COLORS[item.type]}16` }}>{TYPE_LABELS[item.type]}</span><span className={`investment-status-badge ${item.isClosed ? "closed" : "open"}`}>{item.isClosed ? "Closed" : "Open"}</span></span></td>
           <td><span className="investment-type-badge" style={{ color: TYPE_COLORS[item.type], borderColor: `${TYPE_COLORS[item.type]}55`, backgroundColor: `${TYPE_COLORS[item.type]}16` }}>{TYPE_LABELS[item.type]}</span></td>
           <td><span className={`investment-status-badge ${item.isClosed ? "closed" : "open"}`}>{item.isClosed ? "Closed" : "Open"}</span></td>
           <td>{item.quantity ?? 1}</td>
-          <td className="investment-date">{date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
+          <td className="investment-date">{date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}{monthLocked && <small className="investment-month-lock-label">Month locked</small>}</td>
           <td className="investment-money">{fmt(item.amount)}</td>
           <td className="investment-money">{fmt(displayedValue)}{item.type === "stocks" && !item.isClosed && item.marketPrice != null && <small className="investment-fd-term">{fmt(item.marketPrice)} per unit{item.marketPriceUpdatedAt ? ` · ${new Date(item.marketPriceUpdatedAt).toLocaleString()}` : ""}</small>}{item.type === "fd" && fdRemainingTerm && <small className="investment-fd-term">{fdRemainingTerm} · matures {fdMaturityDateLabel}</small>}</td>
           <td className={positive ? "investment-positive" : "investment-negative"}>{positive ? "+" : ""}{fmt(pnl)}{item.type === "fd" && <small className="investment-fd-pnl-caption">{fdRemainingTerm === "Matured" ? "Net P&L at maturity" : "Projected net P&L"}</small>}</td>
@@ -491,13 +462,13 @@ const InvestmentPage = ({ user, onSave }: Props) => {
         </> : <div className="holding-comparison-empty"><ChartNoAxesCombined size={26} /><strong>No matching holdings</strong><span>Try another search or change the asset and position filters.</span></div>}
       </section>
     </div>}
-    {showModal && <InvestmentModal editing={editing} form={form} currency={user.currency ?? "INR"} setForm={setForm} withdrawalOnlyEdit={withdrawalOnlyEdit} onClose={() => { setShowModal(false); setWithdrawalOnlyEdit(false); }} onSave={save} />}
+    {showModal && <InvestmentModal editing={editing} form={form} currency={user.currency ?? "INR"} setForm={setForm} onClose={() => setShowModal(false)} onSave={save} />}
   </div>;
 };
 
 const Summary = ({ label, value, detail, icon, kind }: { label: string; value: string; detail: string; icon: React.ReactNode; kind: string }) => <div className={`investment-summary-card ${kind}`}><div className="investment-summary-top"><span>{label}</span><div className="investment-summary-icon">{icon}</div></div><strong>{value}</strong><small>{detail}</small></div>;
 
-const InvestmentModal = ({ editing, form, currency, setForm, withdrawalOnlyEdit, onClose, onSave }: { editing: Investment | null; form: Omit<Investment, "id">; currency: string; setForm: React.Dispatch<React.SetStateAction<Omit<Investment, "id">>>; withdrawalOnlyEdit: boolean; onClose: () => void; onSave: () => void }) => {
+const InvestmentModal = ({ editing, form, currency, setForm, onClose, onSave }: { editing: Investment | null; form: Omit<Investment, "id">; currency: string; setForm: React.Dispatch<React.SetStateAction<Omit<Investment, "id">>>; onClose: () => void; onSave: () => void }) => {
   const quantity = form.quantity ?? 1;
   const fixedDepositMode = form.type === "fd";
   const directPnlMode = form.directPnl != null;
@@ -518,13 +489,13 @@ const InvestmentModal = ({ editing, form, currency, setForm, withdrawalOnlyEdit,
         <div className="modal-header-text">
           <span className="eyebrow">{editing ? "EDIT INVESTMENT" : "NEW INVESTMENT"}</span>
           <h2 id="investment-modal-title">{editing ? "Edit investment" : "Add investment"}</h2>
-          <p>{withdrawalOnlyEdit ? "This month is locked. Only recording the sale proceeds as a withdrawal is allowed." : "Record your holding and track its purchase and sale prices."}</p>
+          <p>Record your holding and track its purchase and sale prices.</p>
         </div>
         <button type="button" className="close-button" onClick={onClose} aria-label="Close dialog"><X size={18} /></button>
       </div>
 
       <div className="modal-body">
-        <fieldset className="form-grid investment-edit-fields" disabled={withdrawalOnlyEdit}>
+        <fieldset className="form-grid investment-edit-fields">
           {!fixedDepositMode && <div className="investment-direct-pnl-control" style={{ gridColumn: "1 / -1" }}>
             <label className="investment-closed-toggle">
             <input type="checkbox" checked={directPnlMode} onChange={(event) => setForm((current) => event.target.checked
@@ -620,7 +591,7 @@ const InvestmentModal = ({ editing, form, currency, setForm, withdrawalOnlyEdit,
         </fieldset>
         <div className="investment-closed-control">
           <label className="investment-closed-toggle">
-            <input type="checkbox" disabled={withdrawalOnlyEdit} checked={Boolean(form.isClosed)} onChange={(event) => setForm((current) => ({ ...current, isClosed: event.target.checked, withdrawalRecorded: event.target.checked ? current.withdrawalRecorded : false }))} />
+            <input type="checkbox" checked={Boolean(form.isClosed)} onChange={(event) => setForm((current) => ({ ...current, isClosed: event.target.checked, withdrawalRecorded: event.target.checked ? current.withdrawalRecorded : false }))} />
             <span><strong>Closed position</strong><small>Mark this investment as exited or sold.</small></span>
           </label>
           {form.isClosed && <label className="investment-closed-toggle investment-withdrawal-toggle">
@@ -639,7 +610,7 @@ const InvestmentModal = ({ editing, form, currency, setForm, withdrawalOnlyEdit,
 
       <div className="modal-footer">
         <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
-        <button type="submit" className="primary-button"><Check size={15} /> {withdrawalOnlyEdit ? "Record withdrawal" : editing ? "Save changes" : "Add investment"}</button>
+        <button type="submit" className="primary-button"><Check size={15} /> {editing ? "Save changes" : "Add investment"}</button>
       </div>
     </form>
   </div>

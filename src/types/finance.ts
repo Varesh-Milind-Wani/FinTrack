@@ -52,7 +52,10 @@ export interface Withdrawal {
 export interface Expense {
   id: string;
   name: string;
+  /** Primary legacy category retained for reports and older exports. */
   category: string;
+  /** All selected categories; the amount is still stored once for this expense. */
+  categories?: string[];
   amount: number;
   date: string;
   note: string;
@@ -129,6 +132,8 @@ export interface UserAccount {
   startingBalancePasswordHash?: string;
   startingBalancePasswordSalt?: string;
   currency: string;
+  /** Currency used to display converted financial values; ledger amounts remain in `currency`. */
+  displayCurrency?: string;
   defaultCostAmount: number;
   /** Optional daily net-loss warning threshold. Zero or undefined disables it. */
   dailyLossLimit?: number;

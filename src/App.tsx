@@ -19,9 +19,12 @@ const InvestmentPage = lazy(() => import("./pages/Investment"));
 const Expenses = lazy(() => import("./pages/Expenses"));
 const Income = lazy(() => import("./pages/Income"));
 const Reports = lazy(() => import("./pages/Reports"));
+const WeeklyAnalysis = lazy(() => import("./pages/WeeklyAnalysis"));
 const Profile = lazy(() => import("./pages/Profile"));
 const ScenarioLab = lazy(() => import("./pages/ScenarioLab"));
 const Notifications = lazy(() => import("./pages/Notifications"));
+const DiversificationAnalysis = lazy(() => import("./pages/DiversificationAnalysis"));
+const RebalancePlanner = lazy(() => import("./pages/RebalancePlanner"));
 
 import {
   addStorageChangeListener,
@@ -33,6 +36,8 @@ import { calculateCurrentBalance } from "./utils/balance";
 import { getMonthKey, getMonthLabel, isTransactionMonthLocked } from "./utils/monthLocks";
 import { getTransactionDateValidationError } from "./utils/tradingDates";
 import { getDailyTradingReminder, getUnreadWeekdayNotificationCount, markWeekdayNotificationsRead, recordWeekdayNotification, type DailyTradingReminder } from "./utils/weekdayNotifications";
+import { setCurrencyDisplay } from "./utils/money";
+import { fetchLatestExchangeRates, readCachedExchangeRates } from "./services/exchangeRates";
 
 import type {
   Investment,
@@ -52,6 +57,8 @@ type AppPage =
   | "analytics"
   | "profitloss"
   | "reports"
+  | "weekly-analysis"
+  | "notifications"
   | "withdrawals"
   | "income"
   | "settings"
@@ -60,7 +67,9 @@ type AppPage =
   | "investment"
   | "expenses"
   | "profile"
-  | "scenario-lab";
+  | "scenario-lab"
+  | "diversification-analysis"
+  | "rebalance-planner";
 
 const AppLoader = () => (
   <div className="app-loading-screen" role="status" aria-live="polite" aria-label="Loading FinTrack">
@@ -78,6 +87,8 @@ const APP_PAGES: AppPage[] = [
   "analytics",
   "profitloss",
   "reports",
+  "weekly-analysis",
+  "notifications",
   "withdrawals",
   "income",
   "settings",
@@ -87,6 +98,8 @@ const APP_PAGES: AppPage[] = [
   "expenses",
   "profile",
   "scenario-lab",
+  "diversification-analysis",
+  "rebalance-planner",
 ];
 
 const getSavedPage = (userId: string): AppPage => {
@@ -104,6 +117,39 @@ const App = () => {
     useState<UserAccount | null>(
       () => getCurrentUser()
     );
+  const [, setExchangeRateVersion] = useState(0);
+
+  useEffect(() => {
+    if (!user) {
+      setCurrencyDisplay("INR", null);
+      return;
+    }
+    const targetCurrency = user.displayCurrency ?? user.currency ?? "INR";
+    const cachedRates = readCachedExchangeRates();
+    setCurrencyDisplay(targetCurrency, cachedRates);
+    if (cachedRates) setExchangeRateVersion((version) => version + 1);
+
+    const controller = new AbortController();
+    let active = true;
+    let lastRefreshAttempt = Date.now();
+    const refreshRates = () => {
+      lastRefreshAttempt = Date.now();
+      void fetchLatestExchangeRates(controller.signal).then((snapshot) => {
+      if (!active) return;
+      setCurrencyDisplay(targetCurrency, snapshot);
+      setExchangeRateVersion((version) => version + 1);
+      }).catch(() => {
+        // When rates are unavailable, formatters retain the source currency instead of mislabeling values.
+      });
+    };
+    refreshRates();
+    const timer = window.setInterval(refreshRates, 24 * 60 * 60 * 1000);
+    const refreshOnReturn = () => {
+      if (document.visibilityState === "visible" && Date.now() - lastRefreshAttempt >= 20 * 60 * 60 * 1000) refreshRates();
+    };
+    document.addEventListener("visibilitychange", refreshOnReturn);
+    return () => { active = false; controller.abort(); window.clearInterval(timer); document.removeEventListener("visibilitychange", refreshOnReturn); };
+  }, [user?.id, user?.currency, user?.displayCurrency]);
 
   const [activePage, setActivePage] = useState<AppPage>(() => {
     const currentUser = getCurrentUser();
@@ -119,7 +165,6 @@ const App = () => {
     useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [weekdayToast, setWeekdayToast] = useState<DailyTradingReminder | null>(null);
-  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
 
   useEffect(() => {
@@ -142,7 +187,10 @@ const App = () => {
   const openNotifications = () => {
     if (user) markWeekdayNotificationsRead(user.id);
     setUnreadNotificationCount(0);
-    setNotificationsOpen(true);
+    setActivePage("notifications");
+    if (user) {
+      try { localStorage.setItem(`fintrack_active_page_${user.id}`, "notifications"); } catch { /* Page navigation still works without storage. */ }
+    }
     setMobileMenuOpen(false);
   };
 
@@ -221,22 +269,13 @@ const App = () => {
     const previousBodyOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
 
-    const handleOutsideInteraction = (event: MouseEvent) => {
-      const target = event.target;
-      if (target instanceof Element && target.closest(".sidebar, .mobile-menu-button")) {
-        return;
-      }
-      setMobileMenuOpen(false);
-    };
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") setMobileMenuOpen(false);
     };
 
-    document.addEventListener("click", handleOutsideInteraction);
     document.addEventListener("keydown", handleEscape);
     return () => {
       document.body.style.overflow = previousBodyOverflow;
-      document.removeEventListener("click", handleOutsideInteraction);
       document.removeEventListener("keydown", handleEscape);
     };
   }, [mobileMenuOpen]);
@@ -395,7 +434,6 @@ const App = () => {
   const handlePageChange = (
     page: AppPage
   ) => {
-    setNotificationsOpen(false);
     setActivePage(page);
     try {
       localStorage.setItem(`fintrack_active_page_${user.id}`, page);
@@ -411,7 +449,7 @@ const App = () => {
         user={user}
         activePage={activePage}
         onPageChange={handlePageChange}
-        notificationsOpen={notificationsOpen}
+        notificationsOpen={activePage === "notifications"}
         unreadNotificationCount={unreadNotificationCount}
         onOpenNotifications={openNotifications}
         onLogout={handleLogout}
@@ -458,7 +496,6 @@ const App = () => {
         {activePage === "dashboard" ? (
           <Dashboard
             user={user}
-            onOpenNotifications={openNotifications}
             onAdd={() =>
               setModalOpen(true)
             }
@@ -554,6 +591,10 @@ const App = () => {
               setUser(updatedUser);
             }}
           />
+        ) : activePage === "weekly-analysis" ? (
+          <WeeklyAnalysis user={user} />
+        ) : activePage === "notifications" ? (
+          <Notifications user={user} />
         ) : activePage === "withdrawals" ? (
           <Withdrawals
             user={user}
@@ -583,6 +624,10 @@ const App = () => {
           <Income user={user} onSave={(updatedUser) => { updateUser(updatedUser); setUser(updatedUser); }} />
         ) : activePage === "scenario-lab" ? (
           <ScenarioLab user={user} />
+        ) : activePage === "diversification-analysis" ? (
+          <DiversificationAnalysis user={user} />
+        ) : activePage === "rebalance-planner" ? (
+          <RebalancePlanner user={user} />
         ) : (
           <Settings
             user={user}
@@ -630,7 +675,6 @@ const App = () => {
         />
       )}
 
-      {notificationsOpen && <Suspense fallback={<AppLoader />}><Notifications user={user} onClose={() => setNotificationsOpen(false)} /></Suspense>}
     </div>
   );
 };
