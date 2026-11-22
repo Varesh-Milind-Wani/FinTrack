@@ -185,6 +185,14 @@ const TransactionTable = ({
                 && transaction.entryPrice > 0 && transaction.quantity > 0
                 ? transaction.entryPrice * transaction.quantity
                 : null;
+              const exitedAmount = transaction.exitPrice != null && transaction.quantity != null
+                && Number.isFinite(transaction.exitPrice) && Number.isFinite(transaction.quantity)
+                && transaction.exitPrice >= 0 && transaction.quantity > 0
+                ? transaction.exitPrice * transaction.quantity
+                : null;
+              const tradeVolume = investedAmount != null && exitedAmount != null
+                ? investedAmount + exitedAmount
+                : null;
               const calculatedReturnPercent = investedAmount != null && Number.isFinite(investedAmount) && investedAmount > 0
                 && transaction.exitPrice != null && Number.isFinite(transaction.exitPrice) && transaction.exitPrice >= 0
                 && Number.isFinite(transaction.amount)
@@ -309,7 +317,11 @@ const TransactionTable = ({
                             {transaction.instrument && <div><dt>Instrument</dt><dd>{transaction.instrument}{transaction.strikePrice ? ` ${transaction.strikePrice}` : ""}{transaction.optionType ? ` ${transaction.optionType}` : ""}</dd></div>}
                             {transaction.expiryDate && <div><dt>Expiry</dt><dd>{transaction.expiryDate}</dd></div>}
                             <div><dt>Price</dt><dd>{formatCurrency(transaction.price ?? 0, user.currency)}</dd></div>
+                            <div><dt>Entry price</dt><dd>{transaction.entryPrice != null ? formatCurrency(transaction.entryPrice, user.currency) : "Not recorded"}</dd></div>
+                            <div><dt>Exit price</dt><dd>{transaction.exitPrice != null ? formatCurrency(transaction.exitPrice, user.currency) : "Not recorded"}</dd></div>
+                            <div><dt>Quantity</dt><dd>{transaction.quantity != null ? transaction.quantity.toLocaleString("en-IN") : "Not recorded"}</dd></div>
                             <div><dt>Gross amount</dt><dd>{formatCurrency(transaction.grossAmount ?? transaction.price ?? 0, user.currency)}</dd></div>
+                            <div><dt>Volume (buy + sell)</dt><dd>{tradeVolume != null && Number.isFinite(tradeVolume) ? formatCurrency(tradeVolume, user.currency) : "Not recorded"}</dd></div>
                             <div><dt>Cost</dt><dd>{formatCurrency(transaction.costAmount ?? 0, user.currency)}</dd></div>
                             {transaction.brokerageAmount != null && <div><dt>Brokerage</dt><dd>{formatCurrency(transaction.brokerageAmount, user.currency)}</dd></div>}
                             {transaction.otherChargesAmount != null && <div><dt>Other charges</dt><dd>{formatCurrency(transaction.otherChargesAmount, user.currency)}</dd></div>}
